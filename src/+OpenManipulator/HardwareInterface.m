@@ -32,6 +32,10 @@ classdef HardwareInterface < handle
         POSITION_CONTROL_MODE = 3;
         HOME_ENCODER = 2048;
         ENCODER_PER_DEG = 4096 / 360;
+
+        % Gripper encoder limits (from Dynamixel Wizard: open=120°, closed=240°)
+        GRIPPER_OPEN_ENC  = 1365;  % 120° fully open
+        GRIPPER_CLOSE_ENC = 2276;  % 200° closed (cube pickup)
     end
 
     properties
@@ -142,17 +146,22 @@ classdef HardwareInterface < handle
                         id, joint_names{i}, limits(i,1), limits(i,2), velocity);
                 end
             end
+
+            % Configure gripper motor
+            obj.configureGripper(velocity);
+
             fprintf('--- Configuration Complete ---\n\n');
         end
 
         function enableTorque(obj)
-        %ENABLETORQUE Enable torque on all 4 arm joints
-            for id = obj.DXL_IDS
+        %ENABLETORQUE Enable torque on all arm joints + gripper
+            all_ids = [obj.DXL_IDS, obj.GRIPPER_ID];
+            for id = all_ids
                 write1ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
                     obj.ADDR_TORQUE_ENABLE, 1);
                 pause(0.05);
             end
-            fprintf('Torque ENABLED on all joints.\n');
+            fprintf('Torque ENABLED on all motors (arm + gripper).\n');
         end
 
         function disableTorque(obj)
@@ -228,11 +237,12 @@ classdef HardwareInterface < handle
         end
 
         function moveHome(obj)
-        %MOVEHOME Move all joints to home position (encoder 2048)
+        %MOVEHOME Move all joints to home position (encoder 2048) and open gripper
             fprintf('Moving to HOME position...\n');
             home_encoders = [obj.HOME_ENCODER, obj.HOME_ENCODER, ...
                              obj.HOME_ENCODER, obj.HOME_ENCODER];
             obj.syncWritePositions(home_encoders);
+            obj.openGripper();
             obj.waitForMotion();
             fprintf('HOME reached.\n');
         end
@@ -285,6 +295,77 @@ classdef HardwareInterface < handle
                 pause(0.05);
             end
             warning('Motion timeout after %.1f seconds.', timeout);
+        end
+
+        function configureGripper(obj, velocity)
+        %CONFIGUREGRIPPER Configure gripper motor (ID 15)
+        %   configureGripper(velocity)
+            if nargin < 2
+                velocity = 20;
+            end
+
+            id = obj.GRIPPER_ID;
+
+            % Disable torque (required for EEPROM writes)
+            write1ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
+                obj.ADDR_TORQUE_ENABLE, 0);
+            pause(0.05);
+
+            % Position control mode
+            write1ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
+                obj.ADDR_OPERATING_MODE, obj.POSITION_CONTROL_MODE);
+            pause(0.05);
+
+            % Set position limits
+            min_enc = min(obj.GRIPPER_CLOSE_ENC, obj.GRIPPER_OPEN_ENC);
+            max_enc = max(obj.GRIPPER_CLOSE_ENC, obj.GRIPPER_OPEN_ENC);
+            write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
+                obj.ADDR_MIN_POSITION_LIMIT, min_enc);
+            write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
+                obj.ADDR_MAX_POSITION_LIMIT, max_enc);
+
+            % Set velocity
+            write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
+                obj.ADDR_PROFILE_VELOCITY, velocity);
+
+            dxl_comm = getLastTxRxResult(obj.port_num, obj.PROTOCOL_VERSION);
+            if dxl_comm ~= 0
+                warning('Gripper motor ID %d: comm error (code %d)', id, dxl_comm);
+            else
+                fprintf('  Motor %d (Gripper): OK [enc %d–%d] vel=%d\n', ...
+                    id, min_enc, max_enc, velocity);
+            end
+        end
+
+        function setGripperPosition(obj, pct)
+        %SETGRIPPERPOSITION Set gripper to a percentage position
+        %   setGripperPosition(pct) — 0 = fully open, 100 = fully closed
+            pct = max(0, min(100, pct));
+            enc = round(obj.GRIPPER_OPEN_ENC + ...
+                (pct / 100) * (obj.GRIPPER_CLOSE_ENC - obj.GRIPPER_OPEN_ENC));
+            write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, ...
+                obj.GRIPPER_ID, obj.ADDR_GOAL_POSITION, enc);
+            fprintf('Gripper -> %d%% (encoder %d)\n', pct, enc);
+        end
+
+        function pct = readGripperPosition(obj)
+        %READGRIPPERPOSITION Read current gripper position as 0–100%
+        %   pct = readGripperPosition() — 0 = open, 100 = closed
+            enc = read4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, ...
+                obj.GRIPPER_ID, obj.ADDR_PRESENT_POSITION);
+            range = obj.GRIPPER_CLOSE_ENC - obj.GRIPPER_OPEN_ENC;
+            pct = (double(enc) - obj.GRIPPER_OPEN_ENC) / range * 100;
+            pct = max(0, min(100, pct));
+        end
+
+        function openGripper(obj)
+        %OPENGRIPPER Fully open the gripper
+            obj.setGripperPosition(0);
+        end
+
+        function closeGripper(obj)
+        %CLOSEGRIPPER Fully close the gripper
+            obj.setGripperPosition(100);
         end
 
         function disconnect(obj)

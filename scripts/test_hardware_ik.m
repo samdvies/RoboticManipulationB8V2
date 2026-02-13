@@ -46,25 +46,59 @@ hw.moveHome();
 fprintf('\n--- Ready for commands ---\n');
 fprintf('Enter target as: x, y, z  (mm)\n');
 fprintf('Example: 200, 0, 100\n');
+fprintf('Gripper: ''open'', ''close'', or ''grip 50'' (0-100%%)\n');
 fprintf('Type ''q'' to quit.\n\n');
 
 %% Interactive Loop
 while true
-    user_input = input('Target [x, y, z]: ', 's');
+    user_input = input('Command: ', 's');
+    trimmed = strtrim(user_input);
 
     % Check for quit
-    if strcmpi(strtrim(user_input), 'q')
+    if strcmpi(trimmed, 'q')
         fprintf('\nQuitting...\n');
         break;
     end
 
-    % Parse input
+    % --- Gripper commands ---
+    if strcmpi(trimmed, 'open')
+        hw.openGripper();
+        pause(1);
+        fprintf('Gripper position: %.0f%%\n\n', hw.readGripperPosition());
+        continue;
+    end
+
+    if strcmpi(trimmed, 'close')
+        hw.closeGripper();
+        pause(1);
+        fprintf('Gripper position: %.0f%%\n\n', hw.readGripperPosition());
+        continue;
+    end
+
+    if strncmpi(trimmed, 'grip', 4)
+        tokens = strsplit(trimmed);
+        if length(tokens) >= 2
+            pct = str2double(tokens{2});
+            if ~isnan(pct)
+                hw.setGripperPosition(pct);
+                pause(1);
+                fprintf('Gripper position: %.0f%%\n\n', hw.readGripperPosition());
+            else
+                fprintf('ERROR: Use format: grip 50\n\n');
+            end
+        else
+            fprintf('ERROR: Use format: grip 50\n\n');
+        end
+        continue;
+    end
+
+    % --- Arm movement (x, y, z) ---
     try
-        vals = str2double(strsplit(strtrim(user_input), {',', ' '}));
+        vals = str2double(strsplit(trimmed, {',', ' '}));
         vals = vals(~isnan(vals));
 
         if length(vals) ~= 3
-            fprintf('ERROR: Please enter exactly 3 values (x, y, z).\n\n');
+            fprintf('ERROR: Enter 3 values (x, y, z), or a gripper command.\n\n');
             continue;
         end
 
@@ -106,7 +140,10 @@ while true
         [T_actual, ~] = OpenManipulator.FK(q_actual);
         actual_pos = T_actual(1:3, 4)';
         fprintf('Actual Pos:    [%.1f, %.1f, %.1f] mm\n', actual_pos);
-        fprintf('Hardware Error: %.1f mm\n\n', norm(actual_pos - [x, y, z]));
+        fprintf('Hardware Error: %.1f mm\n', norm(actual_pos - [x, y, z]));
+
+        % Show gripper status
+        fprintf('Gripper: %.0f%%\n\n', hw.readGripperPosition());
 
     catch ME
         fprintf('ERROR: %s\n\n', ME.message);
