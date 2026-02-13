@@ -1,23 +1,15 @@
 
 import numpy as np
 from .DH import get_dh
+from .JointLimits import clamp_joints
 
-def IK(x, y, z, pitch):
+def IK(x, y, z, pitch, method='elbow_up'):
     """
     IK Inverse Kinematics for OpenManipulator-X
-    
-    Input:
-        x: Target X (mm) - Forward
-        y: Target Y (mm) - Left (Internal/RH)
-        z: Target Z (mm) - Up
-        pitch: Target Pitch (degrees) - Relative to horizon
-               (0 = Horizontal, -90 = Pointing Down)
-               
-    Output:
-        joint_angles: list [q1, q2, q3, q4] in DEGREES
-        
-    Note: Internal (Right-Handed) Coordinate System: X-Forward, Y-Left, Z-Up.
+    ...
+    method: 'elbow_up' or 'elbow_down'
     """
+    # ... (same) ... but inside function:
     
     # DH Parameters (Lengths)
     dh = get_dh()
@@ -59,9 +51,14 @@ def IK(x, y, z, pitch):
     cos_psi = np.clip(cos_psi, -1.0, 1.0)
     psi = np.arccos(cos_psi)
     
-    # Solution 1 (Elbow Up)
-    q2_geom = beta + psi
-    q3_geom = (np.pi - alpha)
+    if method == 'elbow_up':
+        # Solution 1 (Elbow Up)
+        q2_geom = beta + psi
+        q3_geom = (np.pi - alpha)
+    else:
+        # Solution 2 (Elbow Down)
+        q2_geom = beta - psi
+        q3_geom = -(np.pi - alpha)
     
     # Mapping to Joint Angles with Baseline Offsets
     # Matches DH.py: theta2 = q2 - 90, theta3 = q3 + 90
@@ -80,4 +77,9 @@ def IK(x, y, z, pitch):
     # q4 = -Pitch - q2 - q3
     q4 = -pitch - q2 - q3
     
-    return [float(q1), float(q2), float(q3), float(q4)]
+    result = [float(q1), float(q2), float(q3), float(q4)]
+    
+    # Enforce joint limits for safe operation
+    result, _ = clamp_joints(result)
+    
+    return result

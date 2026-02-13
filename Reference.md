@@ -80,6 +80,20 @@ Inverse kinematics (calculating joint angles from a desired end-effector pose) f
     **Step 5: Wrist Angle ($\theta_4$)**
     $$ \theta_4 = \theta_{pitch} - (\theta_2 + \theta_3) $$
 
+## Joint Limits
+
+Software-enforced joint limits for safe operation:
+
+| Joint | Name | Min (°) | Max (°) | Notes |
+| :---: | :--- | :---: | :---: | :--- |
+| 1 | Base | -90 | +90 | User restriction: front half-plane only |
+| 2 | Shoulder | -117 | +117 | Conservative safe default |
+| 3 | Elbow | -117 | +117 | Conservative safe default |
+| 4 | Wrist | -117 | +117 | Conservative safe default |
+
+> [!NOTE]
+> Joint limits are enforced at the IK output via `JointLimits.clamp_joints()` (Python) / `OpenManipulator.JointLimits.Clamp()` (MATLAB). Angles exceeding limits are clamped to the nearest boundary with a console warning.
+
 ## Software & Control
 - **ROS/ROS2:** Fully supported packages `open_manipulator` and `open_manipulator_controls`.
 - **MoveIt!:** Integrated for motion planning and IK.

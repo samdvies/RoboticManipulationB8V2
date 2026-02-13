@@ -45,54 +45,77 @@ class MovementDebugger(QMainWindow):
         self.plotter.camera.azimuth += 45
 
         # Control
+        control_layout = QWidget()
+        layout_h = QVBoxLayout(control_layout)
+        
         self.next_btn = QPushButton("Next Step")
         self.next_btn.clicked.connect(self.next_step)
-        main_layout.addWidget(self.next_btn)
+        layout_h.addWidget(self.next_btn)
+        
+        self.toggle_btn = QPushButton("Toggle Config (Current: Elbow Up)")
+        self.toggle_btn.clicked.connect(self.toggle_method)
+        layout_h.addWidget(self.toggle_btn)
+        
+        main_layout.addWidget(control_layout)
 
         # Steps
         self.step_index = -1
+        self.method = 'elbow_up'
         self.steps = [
             {
                 "name": "Home Position",
                 "target": [200, 0, 100, 0],
-                "desc": "Moving to Task Home.\nArm should be reaching forward (X=200), centered (Y=0), slightly up (Z=100).\nPitch is horizontal (0)."
+                "desc": "Moving to Task Home."
             },
             {
                 "name": "Lift Z (Pure Heave)",
                 "target": [200, 0, 200, 0],
-                "desc": "Increasing Z to 200.\nEXPECTATION: Gripper moves STRAIGHT UP.\n- X should NOT change.\n- Pitch should remain 0 (Horizontal).\n- Arm should unfold vertically."
+                "desc": "Increasing Z to 200."
             },
             {
                 "name": "Pitch Down (Pure Tilt)",
                 "target": [200, 0, 200, -45],
-                "desc": "Changing Pitch to -45 (Down).\nEXPECTATION: Wrist tilts down.\n- Wrist position (X,Y,Z) should remain roughly constant.\n- Only the gripper angle changes."
+                "desc": "Pitch to -45 (Down)."
             },
             {
                 "name": "Reach Forward (Pure Surge)",
                 "target": [280, 0, 200, -45],
-                "desc": "Increasing X to 280.\nEXPECTATION: Arm reaches forward.\n- Height (Z) should NOT drop.\n- Pitch should remain -45.\n- No side-to-side wobble."
+                "desc": "Reaching forward to 280."
             },
             {
-                "name": "Return Home",
-                "target": [200, 0, 100, 0],
-                "desc": "Returning to start.\nVerifying repeatability."
+                "name": "Low Reach (Test Elbow Down ideal)",
+                "target": [250, 0, 0, 0],
+                "desc": "Low reach. Elbow Down often better here."
             }
         ]
         
         self.next_step()
 
+    def toggle_method(self):
+        if self.method == 'elbow_up':
+            self.method = 'elbow_down'
+            self.toggle_btn.setText("Toggle Config (Current: Elbow Down)")
+        else:
+            self.method = 'elbow_up'
+            self.toggle_btn.setText("Toggle Config (Current: Elbow Up)")
+        
+        # Re-run current step
+        self.run_ik()
+
     def next_step(self):
         self.step_index = (self.step_index + 1) % len(self.steps)
-        step = self.steps[self.step_index]
+        self.run_ik()
         
+    def run_ik(self):
+        step = self.steps[self.step_index]
         x, y, z, pitch = step['target']
-        self.status_label.setText(f"Step {self.step_index + 1}: {step['name']} (Target: [{x}, {y}, {z}, {pitch}])")
-        self.description_text.setText(step['desc'])
+        self.status_label.setText(f"Step {self.step_index + 1}: {step['name']} ({self.method})")
+        self.description_text.setText(step['desc'] + f"\nTarget: {step['target']}")
         
         try:
             # IK
-            q = IK(float(x), float(y), float(z), float(pitch))
-            print(f"IK Target: {step['target']} -> Joints: {q}")
+            q = IK(float(x), float(y), float(z), float(pitch), method=self.method)
+            print(f"IK ({self.method}) Target: {step['target']} -> Joints: {q}")
             
             # FK for Visuals
             T_ee, global_transforms = FK(q)

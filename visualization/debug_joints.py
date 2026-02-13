@@ -15,6 +15,8 @@ from pyvistaqt import QtInteractor
 from visualization.robot_renderer import RobotRenderer
 from visualization.kinematics.FK import FK
 
+from visualization.kinematics.JointLimits import JOINT_LIMITS, JOINT_NAMES
+
 class JointDebugWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -38,13 +40,16 @@ class JointDebugWindow(QMainWindow):
         joint_layout = QGridLayout()
         joint_group.setLayout(joint_layout)
         
-        # Joint Ranges
-        joints = [
-            ('q1 (Base)', -180, 180, 0),
-            ('q2 (Shoulder)', -180, 180, 0),
-            ('q3 (Elbow)', -180, 180, 0),
-            ('q4 (Wrist)', -180, 180, 0)
-        ]
+        # Joint Ranges from JOINT_LIMITS
+        # Structure: ('Name', min, max, default)
+        joints = []
+        for i in range(4):
+            joints.append((
+                JOINT_NAMES[i], 
+                int(JOINT_LIMITS['min'][i]), 
+                int(JOINT_LIMITS['max'][i]), 
+                0
+            ))
         
         for i, (name, min_val, max_val, default) in enumerate(joints):
             key = f"q{i+1}"

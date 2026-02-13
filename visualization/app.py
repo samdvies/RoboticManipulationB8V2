@@ -14,6 +14,7 @@ from pyvistaqt import QtInteractor
 from visualization.robot_renderer import RobotRenderer
 from visualization.kinematics.IK import IK
 from visualization.kinematics.FK import FK
+from visualization.kinematics.JointLimits import clamp_joints, validate_joints, get_limits, JOINT_NAMES
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -46,10 +47,10 @@ class MainWindow(QMainWindow):
         # Define ranges and defaults (Internal Coordinates: X-Fwd, Y-Left, Z-Up)
         # Pitch: -90 (Down) to +90 (Up)
         controls = [
-            ('X', 50, 350, 200),   # Forward range
-            ('Y', -200, 200, 0),   # Left/Right range (Positive is Left)
-            ('Z', 0, 350, 100),    # Up/Down range
-            ('Pitch', -90, 90, 0)  # Pitch angle
+            ('X', 0, 450, 200),     # Forward range (0 to Max Reach)
+            ('Y', -450, 450, 0),    # Left/Right range (± Max Reach)
+            ('Z', 0, 450, 100),     # Up/Down range (0 to Max Height)
+            ('Pitch', -90, 90, 0)   # Pitch angle
         ]
         
         for i, (name, min_val, max_val, default) in enumerate(controls):
@@ -91,6 +92,24 @@ class MainWindow(QMainWindow):
         view_layout.addWidget(btn_side, 1, 1)
         
         control_layout.addWidget(view_group)
+        
+        # Joint Limits Status Group
+        limits_group = QGroupBox("Joint Status")
+        limits_layout = QVBoxLayout()
+        limits_group.setLayout(limits_layout)
+        
+        self.joint_labels = []
+        limits = get_limits()
+        for i in range(4):
+            lbl = QLabel(f"J{i+1} ({JOINT_NAMES[i]}): -- [{limits['min'][i]:.0f}°, {limits['max'][i]:.0f}°]")
+            self.joint_labels.append(lbl)
+            limits_layout.addWidget(lbl)
+        
+        self.limit_status = QLabel("✓ All joints within limits")
+        self.limit_status.setStyleSheet("color: green; font-weight: bold;")
+        limits_layout.addWidget(self.limit_status)
+        
+        control_layout.addWidget(limits_group)
         control_layout.addStretch()
 
         # 2. Right Panel: 3D Visualization
@@ -121,17 +140,32 @@ class MainWindow(QMainWindow):
         self.labels['Pitch'].setText(f"Pitch: {pitch}")
         
         try:
-            # Call Python IK
-            # IK(x, y, z, pitch) -> Returns list of joint angles [q1, q2, q3, q4]
+            # Call Python IK (returns clamped angles)
             q = IK(float(x), float(y), float(z), float(pitch))
             
-            # Use FK to get global transforms for visualization
-            # FK(q) -> T_ee, global_transforms
-            T_ee, global_transforms = FK(q)
+            # Check if any joints were at their limits
+            is_valid, violations = validate_joints(q)
             
-            # Process transforms
-            # global_transforms is already a list of 4x4 numpy arrays.
-            # Directly pass to renderer.
+            # Update joint angle labels
+            limits = get_limits()
+            for i in range(4):
+                angle_str = f"J{i+1} ({JOINT_NAMES[i]}): {q[i]:.1f}° [{limits['min'][i]:.0f}°, {limits['max'][i]:.0f}°]"
+                is_at_limit = abs(q[i] - limits['min'][i]) < 0.1 or abs(q[i] - limits['max'][i]) < 0.1
+                if is_at_limit:
+                    self.joint_labels[i].setStyleSheet("color: orange; font-weight: bold;")
+                else:
+                    self.joint_labels[i].setStyleSheet("")
+                self.joint_labels[i].setText(angle_str)
+            
+            if not is_valid or any(abs(q[i] - limits['min'][i]) < 0.1 or abs(q[i] - limits['max'][i]) < 0.1 for i in range(4)):
+                self.limit_status.setText("⚠ Joint(s) at limit")
+                self.limit_status.setStyleSheet("color: orange; font-weight: bold;")
+            else:
+                self.limit_status.setText("✓ All joints within limits")
+                self.limit_status.setStyleSheet("color: green; font-weight: bold;")
+            
+            # Use FK to get global transforms for visualization
+            T_ee, global_transforms = FK(q)
             self.renderer.update_actors(global_transforms)
             
         except Exception as e:
