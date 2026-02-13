@@ -59,14 +59,25 @@ def IK(x, y, z, pitch):
     cos_psi = np.clip(cos_psi, -1.0, 1.0)
     psi = np.arccos(cos_psi)
     
-    # Solution 2 (Elbow Down)
-    q2_geom = beta - psi
-    q3_geom = -(np.pi - alpha)
+    # Solution 1 (Elbow Up)
+    q2_geom = beta + psi
+    q3_geom = (np.pi - alpha)
     
     # Mapping to Joint Angles with Baseline Offsets
     # Matches DH.py: theta2 = q2 - 90, theta3 = q3 + 90
-    q2 = np.rad2deg(q2_geom) + 90.0
+    # Correction: q2 axis is inverted relative to geometric angle.
+    # q2_geom=90 (Up) -> theta=-90 (Up) -> q2=0.
+    # q2_geom=0 (Fwd) -> theta=0 (Fwd) -> q2=90.
+    # Relationship: q2 = 90 - q2_geom
+    q2 = 90.0 - np.rad2deg(q2_geom)
     q3 = np.rad2deg(q3_geom) - 90.0
-    q4 = np.rad2deg(pitch_rad - q2_geom - q3_geom)
+    
+    # Calculate q4 to maintain target pitch
+    # Global Pitch = theta2 + theta3 + theta4
+    # But q4 axis appears inverted relative to pitch command:
+    # Negative q4 -> Moves Up. Positive q4 -> Moves Down.
+    # So to achieve Negative Pitch (Down), we need Positive q4 change.
+    # q4 = -Pitch - q2 - q3
+    q4 = -pitch - q2 - q3
     
     return [float(q1), float(q2), float(q3), float(q4)]

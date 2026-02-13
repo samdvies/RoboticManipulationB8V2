@@ -54,19 +54,19 @@ class RobotRenderer:
         scale = 100
         
         # X Axis (Red) - Forward
-        self.plotter.add_mesh(pv.Arrow(start=origin, direction=[1, 0, 0], scale=scale*4), color='red')
-        self.plotter.add_text("X+", position=(4.2*scale, 0, 0), color='red', font_size=12)
+        self.plotter.add_mesh(pv.Arrow(start=origin, direction=[1, 0, 0], scale=scale), color='red')
+        self.plotter.add_text("X+", position=(1.2*scale, 0, 0), color='red', font_size=10)
         
         # Y Axis (Green) - Left (Internal Frame) -> PyVista +Y
-        self.plotter.add_mesh(pv.Arrow(start=origin, direction=[0, 1, 0], scale=scale*4), color='green')
-        self.plotter.add_text("Y+", position=(0, 4.2*scale, 0), color='green', font_size=12)
+        self.plotter.add_mesh(pv.Arrow(start=origin, direction=[0, 1, 0], scale=scale), color='green')
+        self.plotter.add_text("Y+", position=(0, 1.2*scale, 0), color='green', font_size=10)
         
         # Z Axis (Blue) - Up
-        self.plotter.add_mesh(pv.Arrow(start=origin, direction=[0, 0, 1], scale=scale*4), color='blue')
-        self.plotter.add_text("Z+", position=(0, 0, 4.2*scale), color='blue', font_size=12)
+        self.plotter.add_mesh(pv.Arrow(start=origin, direction=[0, 0, 1], scale=scale), color='blue')
+        self.plotter.add_text("Z+", position=(0, 0, 1.2*scale), color='blue', font_size=10)
 
-        # Add some numbers/ticks at 100mm intervals
-        for i in range(1, 5):
+        # Add some numbers/ticks at 100mm intervals (Start at 200 to avoid clutter with axis arrow)
+        for i in range(2, 5):
             val = i * 100
             # X labels
             self.plotter.add_text(str(val), position=(val, 0, 0), color='red', font_size=8)
