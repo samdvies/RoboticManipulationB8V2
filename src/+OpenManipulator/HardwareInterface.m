@@ -23,6 +23,7 @@ classdef HardwareInterface < handle
         ADDR_MIN_POSITION_LIMIT = 52;
         ADDR_MAX_POSITION_LIMIT = 48;
         ADDR_TORQUE_ENABLE      = 64;
+        ADDR_PROFILE_ACCELERATION = 108;
         ADDR_PROFILE_VELOCITY   = 112;
         ADDR_GOAL_POSITION      = 116;
         ADDR_MOVING             = 122;
@@ -133,9 +134,11 @@ classdef HardwareInterface < handle
                 write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
                     obj.ADDR_MAX_POSITION_LIMIT, max_enc);
 
-                % Set profile velocity
+                % Set profile velocity & acceleration
                 write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
                     obj.ADDR_PROFILE_VELOCITY, velocity);
+                write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
+                    obj.ADDR_PROFILE_ACCELERATION, max(1, round(velocity/2))); % Accel = 50% of Vel
 
                 % Check errors
                 dxl_comm = getLastTxRxResult(obj.port_num, obj.PROTOCOL_VERSION);
@@ -208,20 +211,122 @@ classdef HardwareInterface < handle
             obj.waitForMotion();
         end
 
-        function moveToAnglesInterpolated(obj, q_target, num_steps)
-        %MOVETOANGLESINTERPOLATED Linear interpolation from current to target
-        %   moveToAnglesInterpolated([q1,q2,q3,q4], num_steps)
-        %
-        %   Generates num_steps linearly spaced waypoints and sync-writes each.
-            if nargin < 3
-                num_steps = 10;
-            end
-
+        function moveToPose(obj, x, y, z, pitch, time_sec)
+        %MOVETOPOSE High-level move command with Auto-Collision Avoidance
+        %   moveToPose(x, y, z, pitch)
+        %   moveToPose(x, y, z, pitch, time_sec)
+        
+            if nargin < 6, time_sec = 2.0; end
+            
+            % 1. Get Current Pose
             q_current = obj.readAngles();
+            [T_current, ~] = OpenManipulator.FK(q_current);
+            start_pos = T_current(1:3, 4);
+            
+            % 2. Calculate Target Angles
+            try
+                q_target = OpenManipulator.IK(x, y, z, pitch);
+            catch
+                error('IK Failed: Target [%.1f, %.1f, %.1f] unreachable.', x, y, z);
+            end
+            
+            % 3. Simulate Direct Path
+            MIN_Z = 25; % Safety margin for Elbow/Wrist
+            is_safe = true;
+            steps = 10;
+            
+            for i = 1:steps
+                t = i / steps;
+                q_sim = (1-t)*q_current + t*q_target;
+                [~, tf] = OpenManipulator.FK(q_sim);
+                
+                % Check Elbow(2), Wrist(3) - Strict Safety
+                % EE(5) is allowed to go low (picking/placing)
+                if tf(3,4,2) < MIN_Z || tf(3,4,3) < MIN_Z 
+                    is_safe = false;
+                    break;
+                end
+                
+                % Optional: Flag unsafe if EE dips below both Start Z and Target Z 
+                % (U-shaped dip collision risk), but simple Elbow check is usually determining factor.
+            end
+            
+            % 4. Execute
+            if is_safe
+                obj.moveToAnglesInterpolated(q_target, ceil(time_sec/0.05));
+            else
+                fprintf('  [AUTO-SAFETY] Direct path unsafe. Rerouting via Safe Z...\n');
+                
+                % Adaptive Safe Z Strategy
+                % Base clearance: Above highest point of current or target
+                safe_z = max(start_pos(3), z) + 40; 
+                
+                % If moving a significant distance, ensure absolute minimum height (to clear obstacles)
+                dist = norm(start_pos - [x, y, z]);
+                if dist > 50
+                    safe_z = max(safe_z, 100); % Force at least 100mm for long moves
+                end
+                
+                % Waypoint 1: Lift current X,Y to Safe Z
+                q_via1 = OpenManipulator.IK(start_pos(1), start_pos(2), safe_z, pitch);
+                obj.moveToAnglesInterpolated(q_via1, 20); 
+                
+                % Waypoint 2: Move to Target X,Y at Safe Z
+                q_via2 = OpenManipulator.IK(x, y, safe_z, pitch);
+                obj.moveToAnglesInterpolated(q_via2, 40); 
+                
+                % Waypoint 3: Lower to Target
+                obj.moveToAnglesInterpolated(q_target, 20); 
+            end
+        end
 
+        function moveToAnglesInterpolated(obj, q_target, num_steps)
+        %MOVETOANGLESINTERPOLATED Smart software interpolation
+        %   Uses linear interpolation for large moves, but skips for small moves.
+        %   Verifies final position using FK.
+        
+            q_current = obj.readAngles();
+            
+            % Calculate max joint movement
+            max_diff = max(abs(q_target - q_current));
+            
+            % Determine steps dynamicallly if not provided or for small moves
+            if max_diff < 10
+                 % Small move: Do it in 1 step to avoid jerkiness
+                 num_steps = 1;
+            elseif nargin < 3
+                 % Default: ~5 degrees per step
+                 num_steps = ceil(max_diff / 5);
+            end
+            
+            % Ensure at least 1 step
+            num_steps = max(1, num_steps);
+
+            % Interpolation Loop
             for step = 1:num_steps
                 t = step / num_steps;
                 q_interp = (1 - t) * q_current + t * q_target;
+                
+                % --- Safety Check ---
+                % Perform FK to check for ground collision
+                [~, global_transforms] = OpenManipulator.FK(q_interp);
+                
+                % Check Elbow (Frame 2), Wrist (Frame 3), and End-Effector (Frame 5)
+                % Z-heights are in the 3rd row, 4th column (Position Z)
+                z_elbow = global_transforms(3, 4, 2);
+                z_wrist = global_transforms(3, 4, 3);
+                z_ee    = global_transforms(3, 4, 5);
+                
+                % Define Safety Threshold for Structure (Elbow/Wrist)
+                MIN_Z_HEIGHT = 20; 
+                
+                % Relaxed Threshold for End Effector (allow to touch table/objects)
+                MIN_EE_HEIGHT = 5; 
+                
+                if z_elbow < MIN_Z_HEIGHT || z_wrist < MIN_Z_HEIGHT || z_ee < MIN_EE_HEIGHT
+                    error('Motion Safety Violation: Structure < %dmm or EE < %dmm. Aborting.', MIN_Z_HEIGHT, MIN_EE_HEIGHT);
+                end
+                % --------------------
 
                 encoders = zeros(1, 4);
                 for i = 1:4
@@ -234,6 +339,33 @@ classdef HardwareInterface < handle
 
             % Wait for final position to settle
             obj.waitForMotion();
+            
+            % Verification
+            obj.verifyPose(q_target);
+        end
+
+        function verifyPose(obj, q_target)
+        %VERIFYPOSE Checks if actual robot pose matches target
+             q_actual = obj.readAngles();
+             try
+                 [T_target, ~] = OpenManipulator.FK(q_target);
+                 [T_actual, ~] = OpenManipulator.FK(q_actual);
+                 
+                 pos_target = T_target(1:3, 4);
+                 pos_actual = T_actual(1:3, 4);
+                 
+                 dist = norm(pos_target - pos_actual);
+                 
+                 if dist > 15 % 15mm tolerance
+                     fprintf('  [WARNING] Position Mismatch: %.1f mm error.\n', dist);
+                     fprintf('    Target: [%.1f, %.1f, %.1f]\n', pos_target');
+                     fprintf('    Actual: [%.1f, %.1f, %.1f]\n', pos_actual');
+                 else
+                     fprintf('  [Position Verified] Error: %.1f mm\n', dist);
+                 end
+             catch ME
+                 % Ignore FK errors (e.g. if FK not in path)
+             end
         end
 
         function moveHome(obj)
@@ -306,17 +438,27 @@ classdef HardwareInterface < handle
 
             id = obj.GRIPPER_ID;
 
-            % Disable torque (required for EEPROM writes)
+            fprintf('  Configuring Gripper (ID %d)...\n', id);
+
+            % 1. Disable torque (Required to change Operating Mode)
             write1ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
                 obj.ADDR_TORQUE_ENABLE, 0);
-            pause(0.05);
+            pause(0.1);
 
-            % Position control mode
+            % 2. Set Operating Mode to Position Control (Mode 3)
+            % The diagnostic showing Mode 1 means it was likely in Velocity mode
             write1ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
                 obj.ADDR_OPERATING_MODE, obj.POSITION_CONTROL_MODE);
-            pause(0.05);
+            pause(0.1);
 
-            % Set position limits
+            % Verify Mode
+            curr_mode = read1ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
+                obj.ADDR_OPERATING_MODE);
+            if curr_mode ~= obj.POSITION_CONTROL_MODE
+                warning('Gripper Operating Mode failed to set! Readings: %d', curr_mode);
+            end
+
+            % 3. Set Position Limits
             min_enc = min(obj.GRIPPER_CLOSE_ENC, obj.GRIPPER_OPEN_ENC);
             max_enc = max(obj.GRIPPER_CLOSE_ENC, obj.GRIPPER_OPEN_ENC);
             write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
@@ -324,16 +466,20 @@ classdef HardwareInterface < handle
             write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
                 obj.ADDR_MAX_POSITION_LIMIT, max_enc);
 
-            % Set velocity
+            % 4. Set Profile Velocity
             write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
                 obj.ADDR_PROFILE_VELOCITY, velocity);
 
+            % 5. Enable Torque (Gripper must be explicitly enabled here if not done globally)
+            % Note: enableTorque() method does this for all, but good to be safe here?
+            % Actually, standard practice is to configure first, then enable.
+            
             dxl_comm = getLastTxRxResult(obj.port_num, obj.PROTOCOL_VERSION);
             if dxl_comm ~= 0
                 warning('Gripper motor ID %d: comm error (code %d)', id, dxl_comm);
             else
-                fprintf('  Motor %d (Gripper): OK [enc %d–%d] vel=%d\n', ...
-                    id, min_enc, max_enc, velocity);
+                fprintf('  Motor %d (Gripper): OK [Mode %d] [enc %d–%d] vel=%d\n', ...
+                    id, curr_mode, min_enc, max_enc, velocity);
             end
         end
 

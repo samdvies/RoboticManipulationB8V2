@@ -108,3 +108,30 @@ For OpenManipulator-X, $J$ is derived from the partial derivatives of the forwar
 - **ROS2 + MoveIt!:** Best for high-level control. Use `omx_cpp_interface` to bridge Python and MoveIt 2.
 - **`robotis_manipulator`:** The core library handling kinematics and trajectory generation.
 - **Custom Implementation:** DH parameters allow for direct Python implementation of FK/IK for lightweight simulations.
+
+## Gripper Control (Pincer)
+
+The OpenManipulator-X features a 1-DOF gripper (Joint ID 15).
+
+### Configuration
+- **Control Interface:** `src/+OpenManipulator/HardwareInterface.m`
+- **Control Method:** Position control via DYNAMIXEL (0-100%).
+- **Encoder Limits:**
+  - **Open (0%):** 1365 (120°)
+  - **Closed (100%):** 2276 (200°)
+
+### How to Run (MATLAB)
+You can find a test script at `scripts/test_gripper.m`.
+
+```matlab
+% Basic usage in Command Window:
+hw = OpenManipulator.HardwareInterface('COM4', 1000000);
+hw.enableTorque();
+
+hw.openGripper();              % Fully Open
+hw.closeGripper();             % Fully Close
+hw.setGripperPosition(50);     % Set to 50% width
+pos = hw.readGripperPosition(); % Read current position (0-100)
+
+hw.disconnect();
+```
