@@ -326,6 +326,11 @@ class MainWindow(QMainWindow):
             
             # Setup Animation
             self.anim_time = 0
+            self.jac_final_phase = False
+            self.jac_final_time = 0.0
+            self.jac_final_duration = 0.0
+            self.jac_final_start_q = None
+            self.jac_final_target_q = None
             velocity = self.vel_spin.value() # mm/s (Linear)
             ang_velocity = 45.0 # deg/s (Angular - fixed for now, or scaled)
             
@@ -444,84 +449,99 @@ class MainWindow(QMainWindow):
                 new_q = IK(curr_pose_target[0], curr_pose_target[1], curr_pose_target[2], curr_pose_target[3])
                 
             elif mode == 2: # Jacobian Control
-                # Calculate errors
-                current_fk_T, _ = FK(self.current_q_anim)
-                current_pos = current_fk_T[:3, 3] # XYZ
-                
-                # Approximate current Pitch: -(q2 + q3 + q4)
-                # q is in degrees
-                curr_q = self.current_q_anim
-                current_pitch = -(curr_q[1] + curr_q[2] + curr_q[3])
-                
-                target_pos = self.target_pose_mp[:3]
-                target_pitch = self.target_pose_mp[3]
-                
-                error_pos = target_pos - current_pos
-                error_pitch = target_pitch - current_pitch
-                
-                # Check convergence
-                if np.linalg.norm(error_pos) < 5.0 and abs(error_pitch) < 5.0 and t_normalized >= 1.0:
-                    self.stop_motion()
-                    self.motion_status.setText("Target Reached (Jac).")
-                    return
-                
-                # Control gains
-                vel_mag = self.vel_spin.value()
-                
-                # Linear Velocity Command
-                if np.linalg.norm(error_pos) > 0.1:
-                    v_dir = error_pos / np.linalg.norm(error_pos)
+                # Hybrid mode:
+                # 1) Jacobian resolved-rate motion to approach target.
+                # 2) Final joint interpolation phase for exact arrival.
+                if self.jac_final_phase:
+                    self.jac_final_time += self.dt
+                    s = self.jac_final_time / self.jac_final_duration if self.jac_final_duration > 1e-9 else 1.0
+                    s = np.clip(s, 0.0, 1.0)
+                    new_q = self.jac_final_start_q + (self.jac_final_target_q - self.jac_final_start_q) * s
+                    if s >= 1.0:
+                        self.stop_motion()
+                        self.motion_status.setText("Target Reached (Jac Hybrid).")
+                        return
                 else:
-                    v_dir = np.zeros(3)
-                v_lin = v_dir * vel_mag
+                    # Calculate errors
+                    current_fk_T, _ = FK(self.current_q_anim)
+                    current_pos = current_fk_T[:3, 3] # XYZ
                 
-                # Angular Velocity Command
-                # Proportional control for orientation
-                Kp_rot = 2.0 
-                w_pitch_deg = Kp_rot * error_pitch
-                w_pitch_deg = np.clip(w_pitch_deg, -90, 90) # Limit deg/s
-                w_pitch_rad = np.deg2rad(w_pitch_deg) # Convert to rad/s for Jacobian solver
+                    # Current pitch convention used across the simulator
+                    curr_q = self.current_q_anim
+                    current_pitch = -(curr_q[1] + curr_q[2] + curr_q[3])
                 
-                # J is 6x4 (Rows: vx, vy, vz, wx, wy, wz)
-                J = get_jacobian(self.current_q_anim) # 6x4
+                    target_pos = self.target_pose_mp[:3]
+                    target_pitch = self.target_pose_mp[3]
                 
-                # Correct Pitch Axis Calculation
-                # The axis of "Pitch" rotation depends on q1 (Base Yaw).
-                # At q1=0, arm is along X, Pitch axis is Y (0,1,0).
-                # At q1=90, arm is along Y, Pitch axis is -X (-1,0,0).
-                # Rotation Rz(q1) applied to (0,1,0) gives (-sin(q1), cos(q1), 0).
+                    error_pos = target_pos - current_pos
+                    error_pitch = target_pitch - current_pitch
                 
-                q1_rad = np.deg2rad(curr_q[0])
-                pitch_axis = np.array([-np.sin(q1_rad), np.cos(q1_rad), 0])
+                    # Hybrid handoff threshold: close enough for deterministic final approach.
+                    handoff_pos_mm = 15.0
+                    handoff_pitch_deg = 8.0
+                    if np.linalg.norm(error_pos) < handoff_pos_mm and abs(error_pitch) < handoff_pitch_deg:
+                        self.jac_final_phase = True
+                        self.jac_final_time = 0.0
+                        self.jac_final_start_q = self.current_q_anim.copy()
+                        self.jac_final_target_q = np.array(IK(
+                            self.target_pose_mp[0],
+                            self.target_pose_mp[1],
+                            self.target_pose_mp[2],
+                            self.target_pose_mp[3]
+                        ))
+                        max_delta = float(np.max(np.abs(self.jac_final_target_q - self.jac_final_start_q)))
+                        final_joint_speed_deg_s = 90.0
+                        self.jac_final_duration = max(0.12, max_delta / final_joint_speed_deg_s)
+                        self.motion_status.setText("Final approach...")
+                        return
                 
-                # Project Angular Jacobian rows (3 to 5) onto the Pitch Axis
-                # J_pitch (1x4) = pitch_axis (1x3) @ J_w (3x4)
-                J_w = J[3:6, :]
-                J_pitch_row = pitch_axis @ J_w
+                    # Control gains
+                    vel_mag = self.vel_spin.value()
                 
-                # Construct Task Jacobian (4x4)
-                # [ Jv (3x4)      ]
-                # [ J_pitch (1x4) ]
-                J_task = np.vstack([J[0:3, :], J_pitch_row])
+                    # Linear velocity command (P control + saturation)
+                    Kp_pos = 2.0 # 1/s
+                    v_lin = Kp_pos * error_pos
+                    v_norm = np.linalg.norm(v_lin)
+                    if v_norm > vel_mag and v_norm > 1e-9:
+                        v_lin = v_lin * (vel_mag / v_norm)
                 
-                # Task Velocity Vector
-                v_task = np.append(v_lin, w_pitch_rad)
+                    # Angular Velocity Command
+                    Kp_rot = 2.0
+                    w_pitch_rad = Kp_rot * np.deg2rad(error_pitch)
+                    w_pitch_rad = np.clip(w_pitch_rad, -np.deg2rad(90), np.deg2rad(90))
                 
-                # Damped Least Squares
-                lambda_val = 0.05
-                # We need to solve J_task * q_dot = v_task
-                try:
-                    J_dls = J_task.T @ np.linalg.inv(J_task @ J_task.T + lambda_val**2 * np.eye(4))
-                    q_dot_rad = J_dls @ v_task
-                    q_dot_deg = np.rad2deg(q_dot_rad)
-                    
-                    # Integrate
-                    new_q = self.current_q_anim + q_dot_deg * self.dt
-                    
-                except np.linalg.LinAlgError:
-                    print("Jacobian Singularity")
-                    self.stop_motion()
-                    return
+                    # J is 6x4 (Rows: vx, vy, vz, wx, wy, wz)
+                    J = get_jacobian(self.current_q_anim) # 6x4
+                
+                    # Pitch convention in this simulator is:
+                    # pitch = -(q2 + q3 + q4)
+                    # therefore d(pitch_rad)/d(q_rad) = [0, -1, -1, -1]
+                    J_pitch_row = np.array([0.0, -1.0, -1.0, -1.0], dtype=float)
+                
+                    # Construct Task Jacobian (4x4)
+                    # [ Jv (3x4)      ]
+                    # [ J_pitch (1x4) ]
+                    J_task = np.vstack([J[0:3, :], J_pitch_row])
+                
+                    # Task Velocity Vector
+                    v_task = np.append(v_lin, w_pitch_rad)
+                
+                    # Damped Least Squares
+                    lambda_val = 0.05
+                    # We need to solve J_task * q_dot = v_task
+                    try:
+                        J_dls = J_task.T @ np.linalg.inv(J_task @ J_task.T + lambda_val**2 * np.eye(4))
+                        q_dot_rad = J_dls @ v_task
+                        q_dot_deg = np.rad2deg(q_dot_rad)
+                        q_dot_deg = np.clip(q_dot_deg, -120.0, 120.0)
+                        
+                        # Integrate
+                        new_q = self.current_q_anim + q_dot_deg * self.dt
+                        
+                    except np.linalg.LinAlgError:
+                        print("Jacobian Singularity")
+                        self.stop_motion()
+                        return
             
             # --- SAFETY CHECK: Z Floor ---
             # Compute FK of proposed new_q
