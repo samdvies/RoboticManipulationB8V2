@@ -17,6 +17,11 @@ BAUD = 1000000;
 VELOCITY = 30;
 HOVER_OFFSET = 50; % mm above target
 
+% Motion Settings
+MOVE_TIME = 2.0; % seconds (base time for linear moves)
+DEFAULT_MODE = 1; % 1=Joint, 2=Task Linear, 3=Jacobian Hybrid
+DEFAULT_Z_FLOOR = 20; % mm
+
 % Defaults
 def_pick  = [200, 0, 50, -90];
 def_place = [150, 150, 100, -90];
@@ -24,6 +29,15 @@ home_pose = [134, 0, 240, -45];
 
 try
     fprintf('=== Interactive Pick & Place ===\n');
+
+    % --- Motion Mode + Safety ---
+    fprintf('Select Motion Mode: 1=Joint, 2=Task Linear, 3=Jacobian Hybrid (Default: %d): ', DEFAULT_MODE);
+    user_in = input('');
+    if isempty(user_in), motion_mode = DEFAULT_MODE; else, motion_mode = user_in; end
+
+    fprintf('Enter EE Z-Floor Limit (mm) (Default: %g): ', DEFAULT_Z_FLOOR);
+    user_in = input('');
+    if isempty(user_in), z_floor = DEFAULT_Z_FLOOR; else, z_floor = user_in; end
     
     % 1. Connect
     hw = OpenManipulator.HardwareInterface(PORT, BAUD);
@@ -32,7 +46,7 @@ try
     
     % 2. Home
     fprintf('Moving Home...\n');
-    hw.moveToAnglesInterpolated(OpenManipulator.IK(home_pose(1), home_pose(2), home_pose(3), home_pose(4)), 20);
+    hw.moveToAnglesInterpolated(OpenManipulator.IK(home_pose(1), home_pose(2), home_pose(3), home_pose(4)), 20, z_floor);
     hw.openGripper();
     pause(1);
 
@@ -49,7 +63,7 @@ try
         
         try
             % Use High-Level Move (Handles IK + Safety)
-            hw.moveToPose(pose(1), pose(2), pose(3), pose(4));
+            hw.moveToPose(pose(1), pose(2), pose(3), pose(4), MOVE_TIME, motion_mode, z_floor);
         catch ME
             fprintf('Move Failed: %s\nTry again.\n', ME.message);
             continue;
@@ -60,10 +74,10 @@ try
         if strcmpi(choice, 'y')
             fprintf('Gripping...\n');
             hw.closeGripper();
-            pause(1);
+            pause(3);
             
             fprintf('Lifting...\n');
-            hw.moveToPose(pose(1), pose(2), pose(3)+100, pose(4));
+            hw.moveToPose(pose(1), pose(2), pose(3)+100, pose(4), MOVE_TIME, motion_mode, z_floor);
             break; % Exit loop
         else
             fprintf('Retrying...\n');
@@ -82,7 +96,7 @@ try
             pose(1), pose(2), pose(3));
         
         try
-            hw.moveToPose(pose(1), pose(2), pose(3), pose(4));
+            hw.moveToPose(pose(1), pose(2), pose(3), pose(4), MOVE_TIME, motion_mode, z_floor);
         catch ME
              fprintf('Move Failed: %s\nTry again.\n', ME.message);
              continue;
@@ -96,7 +110,7 @@ try
             pause(1);
             
             fprintf('Lifting...\n');
-            hw.moveToPose(pose(1), pose(2), pose(3)+100, pose(4));
+            hw.moveToPose(pose(1), pose(2), pose(3)+100, pose(4), MOVE_TIME, motion_mode, z_floor);
             break; % Exit loop
         else
             fprintf('Retrying...\n');

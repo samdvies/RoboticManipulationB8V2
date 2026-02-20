@@ -9,7 +9,8 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QSlider, QLabel, QGroupBox, QGridLayout, 
-                             QPushButton, QRadioButton, QButtonGroup, QDoubleSpinBox)
+                             QPushButton, QRadioButton, QButtonGroup, QDoubleSpinBox,
+                             QScrollArea)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from pyvistaqt import QtInteractor
 from visualization.robot_renderer import RobotRenderer
@@ -17,6 +18,7 @@ from visualization.kinematics.IK import IK
 from visualization.kinematics.FK import FK
 from visualization.kinematics.JointLimits import clamp_joints, validate_joints, get_limits, JOINT_NAMES
 from visualization.kinematics.Jacobian import get_jacobian
+from visualization.kinematics.GripperSim import GripperSim
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -29,17 +31,22 @@ class MainWindow(QMainWindow):
         
         self.HOME_POSE = np.array([200, 0, 100, 0]) # X, Y, Z, Pitch
         self.safety_bypass = False
+        self.gripper = GripperSim()
 
         # Central Widget and Layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
 
-        # 1. Left Panel: Controls
+        # 1. Left Panel: Controls (scrollable)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFixedWidth(320)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         control_panel = QWidget()
         control_layout = QVBoxLayout(control_panel)
-        control_panel.setFixedWidth(300)
-        main_layout.addWidget(control_panel)
+        scroll_area.setWidget(control_panel)
+        main_layout.addWidget(scroll_area)
 
         # Task Space Sliders Group
         self.sliders = {}
@@ -116,7 +123,7 @@ class MainWindow(QMainWindow):
         
         control_layout.addWidget(limits_group)
         
-        # Motion Control Group (New)
+        # Motion Control Group
         motion_group = QGroupBox("Motion Control")
         motion_layout = QVBoxLayout()
         motion_group.setLayout(motion_layout)
@@ -180,7 +187,6 @@ class MainWindow(QMainWindow):
         motion_layout.addWidget(self.motion_status)
         
         control_layout.addWidget(motion_group)
-        control_layout.addWidget(motion_group)
         
         # Camera Control Group
         cam_group = QGroupBox("Camera Controls")
@@ -208,7 +214,7 @@ class MainWindow(QMainWindow):
         cam_grid.addWidget(QLabel("Azimuth:"), 0, 0)
         self.slider_azim = QSlider(Qt.Horizontal)
         self.slider_azim.setRange(-180, 180)
-        self.slider_azim.setValue(45) # Default
+        self.slider_azim.setValue(45)
         self.slider_azim.valueChanged.connect(self.update_camera_azimuth)
         cam_grid.addWidget(self.slider_azim, 0, 1)
         
@@ -216,12 +222,81 @@ class MainWindow(QMainWindow):
         cam_grid.addWidget(QLabel("Elevation:"), 1, 0)
         self.slider_elev = QSlider(Qt.Horizontal)
         self.slider_elev.setRange(0, 90)
-        self.slider_elev.setValue(30) # Default
+        self.slider_elev.setValue(30)
         self.slider_elev.valueChanged.connect(self.update_camera_elevation)
         cam_grid.addWidget(self.slider_elev, 1, 1)
         
         cam_layout.addLayout(cam_grid)
         control_layout.addWidget(cam_group)
+
+        # ── Gripper Control Group ──
+        grip_group = QGroupBox("Gripper Control")
+        grip_layout = QVBoxLayout()
+        grip_group.setLayout(grip_layout)
+
+        # Gripper Slider (0=Open, 100=Closed)
+        grip_slider_layout = QHBoxLayout()
+        grip_slider_layout.addWidget(QLabel("Grip %:"))
+        self.grip_slider = QSlider(Qt.Horizontal)
+        self.grip_slider.setRange(0, 100)
+        self.grip_slider.setValue(0)
+        self.grip_slider.valueChanged.connect(self.update_gripper_from_slider)
+        grip_slider_layout.addWidget(self.grip_slider)
+        self.grip_slider_label = QLabel("0%")
+        grip_slider_layout.addWidget(self.grip_slider_label)
+        grip_layout.addLayout(grip_slider_layout)
+
+        # Quick Buttons
+        grip_btn_layout = QHBoxLayout()
+        btn_open = QPushButton("Open")
+        btn_open.clicked.connect(self.gripper_open)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.gripper_close)
+        btn_cube = QPushButton("Cube 25mm")
+        btn_cube.clicked.connect(lambda: self.gripper_object(25.0))
+        grip_btn_layout.addWidget(btn_open)
+        grip_btn_layout.addWidget(btn_close)
+        grip_btn_layout.addWidget(btn_cube)
+        grip_layout.addLayout(grip_btn_layout)
+
+        # Mode Radio Buttons
+        self.grip_mode_group = QButtonGroup(self)
+        self.grip_radio_pos = QRadioButton("Position")
+        self.grip_radio_obj = QRadioButton("Object-Aware")
+        self.grip_radio_force = QRadioButton("Force-Limited")
+        self.grip_radio_pos.setChecked(True)
+        self.grip_mode_group.addButton(self.grip_radio_pos, 0)
+        self.grip_mode_group.addButton(self.grip_radio_obj, 1)
+        self.grip_mode_group.addButton(self.grip_radio_force, 2)
+        grip_mode_layout = QHBoxLayout()
+        grip_mode_layout.addWidget(self.grip_radio_pos)
+        grip_mode_layout.addWidget(self.grip_radio_obj)
+        grip_mode_layout.addWidget(self.grip_radio_force)
+        grip_layout.addLayout(grip_mode_layout)
+
+        # Object Width / Force inputs
+        grip_params = QGridLayout()
+        grip_params.addWidget(QLabel("Object mm:"), 0, 0)
+        self.grip_obj_spin = QDoubleSpinBox()
+        self.grip_obj_spin.setRange(0, 50)
+        self.grip_obj_spin.setValue(25)
+        grip_params.addWidget(self.grip_obj_spin, 0, 1)
+        grip_params.addWidget(QLabel("Force %:"), 1, 0)
+        self.grip_force_spin = QDoubleSpinBox()
+        self.grip_force_spin.setRange(0, 100)
+        self.grip_force_spin.setValue(50)
+        grip_params.addWidget(self.grip_force_spin, 1, 1)
+        btn_apply_mode = QPushButton("Apply Mode")
+        btn_apply_mode.clicked.connect(self.apply_grip_mode)
+        grip_params.addWidget(btn_apply_mode, 0, 2, 2, 1)
+        grip_layout.addLayout(grip_params)
+
+        # Gripper Status
+        self.grip_status = QLabel("Open | 0% | Jaw: 40.0mm | Enc: 1365")
+        self.grip_status.setStyleSheet("font-family: monospace; font-size: 10px;")
+        grip_layout.addWidget(self.grip_status)
+
+        control_layout.addWidget(grip_group)
 
         # Back to Home Button
         self.btn_home = QPushButton("BACK TO HOME (BYPASS SAFETY)")
@@ -300,7 +375,7 @@ class MainWindow(QMainWindow):
         if self.is_moving:
             return
             
-        self.safety_bypass = False # Always reset unless explicitly set by move_to_home (which calls this, then sets it True)
+        self.safety_bypass = False
             
         # Get targets
         tx = self.target_inputs['x'].value()
@@ -332,7 +407,7 @@ class MainWindow(QMainWindow):
             self.jac_final_start_q = None
             self.jac_final_target_q = None
             velocity = self.vel_spin.value() # mm/s (Linear)
-            ang_velocity = 45.0 # deg/s (Angular - fixed for now, or scaled)
+            ang_velocity = 45.0 # deg/s (Angular)
             
             dist_lin = np.linalg.norm(self.target_pose_mp[:3] - self.start_pose_mp[:3])
             dist_rot = abs(self.target_pose_mp[3] - self.start_pose_mp[3])
@@ -342,7 +417,6 @@ class MainWindow(QMainWindow):
             
             self.duration = max(dur_lin, dur_rot)
             
-            # Ensure minimum duration to avoid div/0 or instant snaps
             if self.duration < 0.1: 
                 self.duration = 0.1
                 
@@ -358,26 +432,19 @@ class MainWindow(QMainWindow):
             print(e)
 
     def move_to_home(self):
-        # Set target inputs to Home Pose
         self.target_inputs['x'].setValue(self.HOME_POSE[0])
         self.target_inputs['y'].setValue(self.HOME_POSE[1])
         self.target_inputs['z'].setValue(self.HOME_POSE[2])
         self.target_inputs['pitch'].setValue(self.HOME_POSE[3])
-        
-        # Start motion
         self.start_motion()
-        
-        # Enable Bypass (Must be done AFTER start_motion resets it)
         self.safety_bypass = True
         self.motion_status.setText("Moving Home (Unsafe)...")
 
     def set_camera_view(self, view):
         if view == 'center':
-            self.plotter.view_xz() # Side view matches 'Center' logic? Or YZ? 
-            # Let's try Isometric for Center or just Front.
-            # Usually X is forward. Front view is looking from +x to origin?
+            self.plotter.view_xz()
             self.plotter.camera_position = 'xz'
-            self.plotter.camera.azimuth += 90 # Adjust to face front
+            self.plotter.camera.azimuth += 90
             self.plotter.reset_camera()
         elif view == 'left':
             self.plotter.view_yz()
@@ -386,29 +453,20 @@ class MainWindow(QMainWindow):
             self.plotter.camera.azimuth += 180
             
     def update_camera_azimuth(self):
-        val = self.slider_azim.value()
-        # We can't easily set absolute azimuth without knowing the base.
-        # But we can orbit.
-        # Better: Set position on sphere.
         self._update_camera_spherical()
         
     def update_camera_elevation(self):
-        val = self.slider_elev.value()
         self._update_camera_spherical()
         
     def _update_camera_spherical(self):
-        # Calculate position from Azimuth/Elevation sliders
         azim = np.deg2rad(self.slider_azim.value())
         elev = np.deg2rad(self.slider_elev.value())
-        dist = 1000 # Fixed distance
-        
-        # Spherical to Cartesian
-        # Z is up
+        dist = 1000
+
         x = dist * np.cos(elev) * np.cos(azim)
         y = dist * np.cos(elev) * np.sin(azim)
         z = dist * np.sin(elev)
         
-        # Allow user to "Lock" to X/Y/Z adjustments effectively by using these sliders.
         focal_point = np.array(self.plotter.camera.focal_point)
         self.plotter.camera.position = focal_point + np.array([x, y, z])
         self.plotter.render()
@@ -418,7 +476,7 @@ class MainWindow(QMainWindow):
         self.timer.stop()
         self.btn_move.setEnabled(True)
         self.motion_status.setText("Stopped.")
-        self.safety_bypass = False # Reset on stop as well
+        self.safety_bypass = False
 
     def update_motion(self):
         if not self.is_moving:
@@ -433,25 +491,18 @@ class MainWindow(QMainWindow):
         
         new_q = None
         
-        # Determine previous state for safety comparison
-        # (current_q_anim holds the state from the end of the previous step)
         try:
             prev_fk_T, _ = FK(self.current_q_anim)
             z_prev = prev_fk_T[2, 3]
             
             if mode == 0: # Joint Interpolation
-                # Linear Interpolation of Joints
                 new_q = self.start_q + (self.target_q - self.start_q) * t_normalized
                 
             elif mode == 1: # Task Interpolation
-                # Linear Interpolation of Task Space (X, Y, Z, Pitch)
                 curr_pose_target = self.start_pose_mp + (self.target_pose_mp - self.start_pose_mp) * t_normalized
                 new_q = IK(curr_pose_target[0], curr_pose_target[1], curr_pose_target[2], curr_pose_target[3])
                 
             elif mode == 2: # Jacobian Control
-                # Hybrid mode:
-                # 1) Jacobian resolved-rate motion to approach target.
-                # 2) Final joint interpolation phase for exact arrival.
                 if self.jac_final_phase:
                     self.jac_final_time += self.dt
                     s = self.jac_final_time / self.jac_final_duration if self.jac_final_duration > 1e-9 else 1.0
@@ -462,11 +513,9 @@ class MainWindow(QMainWindow):
                         self.motion_status.setText("Target Reached (Jac Hybrid).")
                         return
                 else:
-                    # Calculate errors
                     current_fk_T, _ = FK(self.current_q_anim)
-                    current_pos = current_fk_T[:3, 3] # XYZ
+                    current_pos = current_fk_T[:3, 3]
                 
-                    # Current pitch convention used across the simulator
                     curr_q = self.current_q_anim
                     current_pitch = -(curr_q[1] + curr_q[2] + curr_q[3])
                 
@@ -476,7 +525,6 @@ class MainWindow(QMainWindow):
                     error_pos = target_pos - current_pos
                     error_pitch = target_pitch - current_pitch
                 
-                    # Hybrid handoff threshold: close enough for deterministic final approach.
                     handoff_pos_mm = 15.0
                     handoff_pitch_deg = 8.0
                     if np.linalg.norm(error_pos) < handoff_pos_mm and abs(error_pitch) < handoff_pitch_deg:
@@ -495,47 +543,33 @@ class MainWindow(QMainWindow):
                         self.motion_status.setText("Final approach...")
                         return
                 
-                    # Control gains
                     vel_mag = self.vel_spin.value()
                 
-                    # Linear velocity command (P control + saturation)
-                    Kp_pos = 2.0 # 1/s
+                    Kp_pos = 2.0
                     v_lin = Kp_pos * error_pos
                     v_norm = np.linalg.norm(v_lin)
                     if v_norm > vel_mag and v_norm > 1e-9:
                         v_lin = v_lin * (vel_mag / v_norm)
                 
-                    # Angular Velocity Command
                     Kp_rot = 2.0
                     w_pitch_rad = Kp_rot * np.deg2rad(error_pitch)
                     w_pitch_rad = np.clip(w_pitch_rad, -np.deg2rad(90), np.deg2rad(90))
                 
-                    # J is 6x4 (Rows: vx, vy, vz, wx, wy, wz)
-                    J = get_jacobian(self.current_q_anim) # 6x4
+                    J = get_jacobian(self.current_q_anim)
                 
-                    # Pitch convention in this simulator is:
-                    # pitch = -(q2 + q3 + q4)
-                    # therefore d(pitch_rad)/d(q_rad) = [0, -1, -1, -1]
                     J_pitch_row = np.array([0.0, -1.0, -1.0, -1.0], dtype=float)
                 
-                    # Construct Task Jacobian (4x4)
-                    # [ Jv (3x4)      ]
-                    # [ J_pitch (1x4) ]
                     J_task = np.vstack([J[0:3, :], J_pitch_row])
                 
-                    # Task Velocity Vector
                     v_task = np.append(v_lin, w_pitch_rad)
                 
-                    # Damped Least Squares
                     lambda_val = 0.05
-                    # We need to solve J_task * q_dot = v_task
                     try:
                         J_dls = J_task.T @ np.linalg.inv(J_task @ J_task.T + lambda_val**2 * np.eye(4))
                         q_dot_rad = J_dls @ v_task
                         q_dot_deg = np.rad2deg(q_dot_rad)
                         q_dot_deg = np.clip(q_dot_deg, -120.0, 120.0)
                         
-                        # Integrate
                         new_q = self.current_q_anim + q_dot_deg * self.dt
                         
                     except np.linalg.LinAlgError:
@@ -544,48 +578,29 @@ class MainWindow(QMainWindow):
                         return
             
             # --- SAFETY CHECK: Z Floor ---
-            # Compute FK of proposed new_q
             if new_q is not None:
                 T_check, _ = FK(new_q)
                 z_check = T_check[2, 3]
                 
-                # Safety Limit
                 Z_LIMIT = 20.0
                 
-                # Check Z floor unless bypassed
                 if z_check < Z_LIMIT and not self.safety_bypass:
-                    # Check if we are recovering (moving up)
-                    # Use a small tolerance or ensure strictly greater
                     if z_check > (z_prev + 0.01): 
-                        # Allow upward movement even in danger zone
                         pass 
                     else:
                         self.stop_motion()
                         self.motion_status.setText(f"SAFETY STOP: Z ({z_check:.1f}) < {Z_LIMIT}mm!")
-                        return # Do not update
+                        return
             
-            # Update Internal Phase State for next iteration
             if new_q is not None:
                 self.current_q_anim = new_q
             
-            # Apply to Sliders (which triggers update_robot)
             if new_q is not None:
-                # We update the sliders to reflect the new state.
-                # Since we want to visualize 'new_q', and sliders drive IK, this is tricky.
-                # However, calculating the Pitch from Q is valid.
-                
                 T_ee, _ = FK(new_q)
                 x_new = T_ee[0, 3]
                 y_new = T_ee[1, 3]
                 z_new = T_ee[2, 3]
                 pitch_new = -(new_q[1] + new_q[2] + new_q[3])
-                
-                # Hack: Update sliders without triggering signals to avoid double-update?
-                # Actually, we WANT update_robot to run to update the visualization.
-                # BUT update_robot calls IK.
-                # If we are in Jacobian mode, new_q might NOT match IK(x,y,z,p) exactly if redundancies exist (unlikely for 4DoF)
-                # or if we are drifting.
-                # Ideally we just call update_explicit_q(new_q) and update sliders SILENTLY.
                 
                 self.sliders['X'].blockSignals(True)
                 self.sliders['Y'].blockSignals(True)
@@ -602,7 +617,6 @@ class MainWindow(QMainWindow):
                 self.sliders['Z'].blockSignals(False)
                 self.sliders['Pitch'].blockSignals(False)
                 
-                # Manually call update with our explicit Q
                 self.update_explicit_q(new_q)
             
             if t_normalized >= 1.0 and mode != 2:
@@ -614,9 +628,7 @@ class MainWindow(QMainWindow):
             self.stop_motion()
 
     def update_explicit_q(self, q):
-        # Helper to update visualization with explicit joint angles
         try:
-            # Update labels
             limits = get_limits()
             for i in range(4):
                 angle_str = f"J{i+1} ({JOINT_NAMES[i]}): {q[i]:.1f}° [{limits['min'][i]:.0f}°, {limits['max'][i]:.0f}°]"
@@ -625,7 +637,6 @@ class MainWindow(QMainWindow):
             T_ee, global_transforms = FK(q)
             self.renderer.update_actors(global_transforms)
             
-            # Update Task Labels based on FK
             x = T_ee[0, 3]
             y = T_ee[1, 3]
             z = T_ee[2, 3]
@@ -638,6 +649,53 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             print(f"Explicit Update Error: {e}")
+
+    # ── Gripper UI Handlers ────────────────────────────────────────
+
+    def update_gripper_from_slider(self, value):
+        self.gripper.set_position_pct(value)
+        self._sync_gripper_ui()
+
+    def gripper_open(self):
+        self.gripper.open()
+        self._sync_gripper_ui()
+
+    def gripper_close(self):
+        self.gripper.close()
+        self._sync_gripper_ui()
+
+    def gripper_object(self, width_mm):
+        self.gripper.grip_object(width_mm)
+        self._sync_gripper_ui()
+
+    def apply_grip_mode(self):
+        mode_id = self.grip_mode_group.checkedId()
+        if mode_id == 0:  # Position
+            self.gripper.set_position_pct(self.grip_slider.value())
+        elif mode_id == 1:  # Object-Aware
+            self.gripper.grip_object(self.grip_obj_spin.value())
+        elif mode_id == 2:  # Force-Limited
+            self.gripper.grip_force(self.grip_force_spin.value())
+        self._sync_gripper_ui()
+
+    def _sync_gripper_ui(self):
+        """Push gripper state to slider, status label, and 3D renderer."""
+        state = self.gripper.get_state()
+        # Update slider without re-triggering
+        self.grip_slider.blockSignals(True)
+        self.grip_slider.setValue(int(state['pct']))
+        self.grip_slider.blockSignals(False)
+        self.grip_slider_label.setText(f"{state['pct']:.0f}%")
+        # Status text
+        mode_str = state['mode'].capitalize()
+        self.grip_status.setText(
+            f"{mode_str} | {state['pct']:.0f}% | "
+            f"Jaw: {state['jaw_width_mm']:.1f}mm | "
+            f"Enc: {state['encoder']} | "
+            f"Force: {state['force_pct']:.0f}%"
+        )
+        # Update 3D jaws
+        self.renderer.update_gripper(state['jaw_width_mm'])
 
     def closeEvent(self, event):
         print("Closing Application...")

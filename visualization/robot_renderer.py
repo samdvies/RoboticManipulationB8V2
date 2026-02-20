@@ -8,7 +8,7 @@ class RobotRenderer:
         self.link_meshes = []
         
         # Colors
-        self.colors = ['grey', 'white', 'grey', 'white', 'red'] # Base, L1, L2, L3, EE
+        self.colors = ['grey', 'white', 'grey', 'white', 'red'] # Base, L1, L2, L3, EE(wrist)
         
         # Initialize Mesh Geometry (defined relative to their ATTACHED FRAME)
         
@@ -31,14 +31,33 @@ class RobotRenderer:
         # Connects Joint 3 to Joint 4 (at X=+124).
         self.link_meshes.append(pv.Box(bounds=(0, 124, -12, 12, -12, 12)))
         
-        # Mesh 4 (Link 4 - Wrist/Gripper): Attached to Frame 4.
-        # Connects Joint 4 to End Effector (at X=+126).
-        self.link_meshes.append(pv.Box(bounds=(0, 126, -10, 10, -10, 10)))
+        # Mesh 4 (Link 4 - Wrist stub): Attached to Frame 4.
+        # Shortened wrist: 0 to 90mm (leaves 36mm for jaw assembly)
+        self.link_meshes.append(pv.Box(bounds=(0, 90, -10, 10, -10, 10)))
 
-        # Add initial actors
+        # Add initial actors for the 5 link meshes
         for i, mesh in enumerate(self.link_meshes):
             actor = self.plotter.add_mesh(mesh, color=self.colors[i], show_edges=False)
             self.actors.append(actor)
+
+        # ── Gripper Jaw Meshes (attached to Frame 4, positioned at wrist tip) ──
+        # Jaw geometry: each jaw is a thin box extending from wrist tip (X=90)
+        #   to EE (X=126). Offset symmetrically along Z (pincers open up/down).
+        jaw_length = 36   # mm (126 - 90)
+        jaw_thick  = 6    # mm (Z extent of each jaw finger)
+        jaw_height = 8    # mm (Y extent — width of each finger)
+        self._jaw_half_gap_open = 20.0  # mm — half of max jaw gap (40mm total)
+
+        # Jaws split along Z: top jaw at +Z, bottom jaw at -Z
+        self._jaw_left_mesh  = pv.Box(bounds=(90, 126, -jaw_height/2, jaw_height/2, 0, jaw_thick))
+        self._jaw_right_mesh = pv.Box(bounds=(90, 126, -jaw_height/2, jaw_height/2, -jaw_thick, 0))
+
+        self._jaw_left_actor  = self.plotter.add_mesh(self._jaw_left_mesh, color='darkgrey', show_edges=True)
+        self._jaw_right_actor = self.plotter.add_mesh(self._jaw_right_mesh, color='darkgrey', show_edges=True)
+
+        # Store current jaw state
+        self._current_jaw_width_mm = 40.0  # start fully open
+        self._ee_transform = np.eye(4)     # Frame 4 transform cache
             
         # Axes
         self.add_axes()
@@ -82,34 +101,41 @@ class RobotRenderer:
         self.plotter.add_mesh(sphere, color='lightblue', opacity=0.1, style='wireframe')
 
     def update_actors(self, global_transforms_flat):
-        # global_transforms_flat: List or array of 16*N elements (column-major or row-major?)
-        # MATLAB returns matrices. matlab.engine returns standard Python lists/arrays.
-        # If passed as 4x4xN numpy array, good.
-        # If passed as list, we need to reshape.
-        
-        # Let's assume input is a flattened list of 4x4 matrices in Row-Major order (Python default)?
-        # Or MATLAB linear indexing? 
-        # MATLAB engine usually converts matrices to list of lists (2D) for 2D.
-        # For 3D array? It might return a large list.
-        # We will inspect input type in app.
-        
-        # Assuming input is valid list of 4x4 matrices (T1, T2, T3, T4, T_ee)
-        # Wait, Base (Mesh 0) is static (Identity).
-        # Mesh 1 uses T1.
-        # Mesh 2 uses T2.
-        # Mesh 3 uses T3.
-        # Mesh 4 uses T4.
-        
-        transforms = global_transforms_flat # Expecting list of 4x4 arrays
+        # Expecting list of 4x4 numpy arrays: [T1, T2, T3, T4, T_ee]
+        transforms = global_transforms_flat
         
         # Update Base (Mesh 0): Identity
         self.actors[0].user_matrix = np.eye(4)
         
-        # Update Links
-        # transforms[0] -> T1
-        # transforms[1] -> T2
-        # ...
+        # Update Links (transforms[0]→T1, [1]→T2, [2]→T3, [3]→T4, [4]→T_ee)
         for i in range(len(transforms)):
-            if i+1 < len(self.actors): # Avoid index error if mismatch
+            if i+1 < len(self.actors):
                 T = np.array(transforms[i])
                 self.actors[i+1].user_matrix = T
+
+        # Cache Frame 4 transform for jaw positioning (transforms[3] = T04)
+        if len(transforms) >= 4:
+            self._ee_transform = np.array(transforms[3])
+            self._update_jaw_transforms()
+
+    def update_gripper(self, jaw_width_mm):
+        """Update jaw opening width (mm). 0 = closed, 40 = fully open."""
+        self._current_jaw_width_mm = float(np.clip(jaw_width_mm, 0.0, 40.0))
+        self._update_jaw_transforms()
+
+    def _update_jaw_transforms(self):
+        """Recompute jaw actor transforms from cached Frame 4 + current jaw width."""
+        T4 = self._ee_transform
+        half_gap = self._current_jaw_width_mm / 2.0
+
+        # Top jaw: offset +Z in Frame 4's local coordinate system
+        T_top = T4.copy()
+        T_top[:3, 3] += T4[:3, 2] * half_gap   # T4 Z-column * offset
+        self._jaw_left_actor.user_matrix = T_top
+
+        # Bottom jaw: offset -Z in Frame 4's local coordinate system
+        T_bot = T4.copy()
+        T_bot[:3, 3] -= T4[:3, 2] * half_gap
+        self._jaw_right_actor.user_matrix = T_bot
+
+

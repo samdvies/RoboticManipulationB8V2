@@ -14,3 +14,19 @@ Configuration is well-conditioned.
 Joint 1 Column: [0.00, 159.49, -0.00, 0.00, 0.00, 1.00]
 Joint 2 Column: [90.51, 0.00, -159.49, 0.00, 1.00, 0.00]
 Joint 2 logic checks out (rotates around Y, moves in X-Z).
+=== Jacobian Math Verification ===
+Configuration: [0.0, -45.0, 45.0, 0.0]
+Jacobian Matrix J:
+    0.0000   90.5097         0         0
+  159.4903    0.0000    0.0000    0.0000
+         0 -159.4903 -250.0000 -126.0000
+         0         0         0         0
+         0    1.0000    1.0000    1.0000
+    1.0000    0.0000    0.0000    0.0000
+
+Dimensions OK.
+Condition Number (Linear): 4.1811
+Configuration is well-conditioned.
+Joint 1 Column: [0.00, 159.49, -0.00, 0.00, 0.00, 1.00]
+Joint 2 Column: [90.51, 0.00, -159.49, 0.00, 1.00, 0.00]
+Joint 2 logic checks out (rotates around Y, moves in X-Z).
