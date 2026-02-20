@@ -46,7 +46,7 @@ try
     
     % 2. Home
     fprintf('Moving Home...\n');
-    hw.moveToAnglesInterpolated(OpenManipulator.IK(home_pose(1), home_pose(2), home_pose(3), home_pose(4)), 20, z_floor);
+    hw.moveToPose(home_pose(1), home_pose(2), home_pose(3), home_pose(4), MOVE_TIME, motion_mode, z_floor);
     hw.openGripper();
     pause(1);
 

@@ -233,7 +233,7 @@ classdef HardwareInterface < handle
             q_current = obj.readAngles();
             [T_current, ~] = OpenManipulator.FK(q_current);
             start_pos = T_current(1:3, 4);
-            start_pitch = -(q_current(2) + q_current(3) + q_current(4));
+            start_pitch = q_current(2) + q_current(3) + q_current(4);
             
             % 2. Calculate Target Angles
             try
@@ -299,6 +299,17 @@ classdef HardwareInterface < handle
         
             q_current = obj.readAngles();
             
+            % Track prior EE Z so floor violations can allow upward recovery.
+            prev_z = NaN;
+            if nargin >= 4 && ~isempty(z_floor_mm)
+                try
+                    [T_prev, ~] = OpenManipulator.FK(q_current);
+                    prev_z = T_prev(3, 4);
+                catch
+                    prev_z = NaN;
+                end
+            end
+            
             % Calculate max joint movement
             max_diff = max(abs(q_target - q_current));
             
@@ -326,8 +337,14 @@ classdef HardwareInterface < handle
                 if nargin >= 4 && ~isempty(z_floor_mm)
                     z_ee = T_ee(3, 4);
                     if z_ee < z_floor_mm
-                        error('Motion Safety Violation: EE < %.1fmm. Aborting.', z_floor_mm);
+                        % If already below floor, allow only upward recovery motion.
+                        if ~isnan(prev_z) && z_ee > (prev_z + 0.01)
+                            % Allow recovery toward safe region.
+                        else
+                            error('Motion Safety Violation: EE < %.1fmm. Aborting.', z_floor_mm);
+                        end
                     end
+                    prev_z = z_ee;
                 else
                     % Legacy safety: Elbow/Wrist + relaxed EE
                     z_elbow = global_transforms(3, 4, 2);
@@ -371,7 +388,7 @@ classdef HardwareInterface < handle
             q_start = obj.readAngles();
             [T_start, ~] = OpenManipulator.FK(q_start);
             start_pos = T_start(1:3, 4);
-            start_pitch = -(q_start(2) + q_start(3) + q_start(4));
+            start_pitch = q_start(2) + q_start(3) + q_start(4);
 
             % Duration / steps (include angular distance)
             dist_lin = norm(target_pos(:) - start_pos(:));
@@ -445,7 +462,7 @@ classdef HardwareInterface < handle
                     else
                         [T_curr, ~] = OpenManipulator.FK(current_q);
                         current_pos = T_curr(1:3, 4);
-                        current_pitch = -(current_q(2) + current_q(3) + current_q(4));
+                        current_pitch = current_q(2) + current_q(3) + current_q(4);
 
                         error_pos = target_pos(:) - current_pos(:);
                         error_pitch = target_pitch - current_pitch;
@@ -477,7 +494,7 @@ classdef HardwareInterface < handle
                         w_pitch_rad = max(min(w_pitch_rad, deg2rad(90)), deg2rad(-90));
 
                         J = OpenManipulator.GetJacobian(current_q); % 6x4
-                        J_pitch_row = [0.0, -1.0, -1.0, -1.0];
+                        J_pitch_row = [0.0, 1.0, 1.0, 1.0];
                         J_task = [J(1:3, :); J_pitch_row];
                         v_task = [v_lin; w_pitch_rad];
 
