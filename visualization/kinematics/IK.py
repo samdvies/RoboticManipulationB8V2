@@ -6,80 +6,75 @@ from .JointLimits import clamp_joints
 def IK(x, y, z, pitch, method='elbow_up'):
     """
     IK Inverse Kinematics for OpenManipulator-X
-    ...
+
+    Slanted-link IK accounting for the 24mm forward offset in the
+    shoulder-to-elbow link (L_prox = 130.23mm, beta = 10.62 deg).
+
     method: 'elbow_up' or 'elbow_down'
     """
-    # ... (same) ... but inside function:
-    
     # DH Parameters (Lengths)
     dh = get_dh()
-    d1 = dh[0, 2] # 77 (Base height)
-    L2 = dh[2, 0] # 128 (Link 2)
-    L3 = dh[3, 0] # 124 (Link 3)
-    L4 = dh[4, 0] # 126 (Link 4)
-    
+    d1     = dh[0, 2]  # 77    (Base height)
+    L_prox = dh[2, 0]  # 130.23 (Shoulder to Elbow, slanted)
+    L_dist = dh[3, 0]  # 124   (Elbow to Wrist)
+    L_tool = dh[4, 0]  # 126   (Wrist to EE)
+
+    # Beta: tilt angle of the shoulder link
+    beta_deg = np.degrees(np.arctan2(24, 128))  # 10.62 degrees
+
     # --- Step 1: Base Angle (q1) ---
     q1 = np.rad2deg(np.arctan2(y, x))
-    
+
     # --- Step 2: Planar Projection ---
     r = np.sqrt(x**2 + y**2)
-    
+
     pitch_rad = np.deg2rad(pitch)
-    r_wc = r - L4 * np.cos(pitch_rad)
-    z_wc = (z - d1) - L4 * np.sin(pitch_rad)
-    
+    r_wc = r - L_tool * np.cos(pitch_rad)
+    z_wc = (z - d1) - L_tool * np.sin(pitch_rad)
+
     # Distance from Shoulder (Joint 2) to Wrist Center
     D = np.sqrt(r_wc**2 + z_wc**2)
-    
+
     # Check reachability
-    max_reach = L2 + L3
+    max_reach = L_prox + L_dist
     if D > max_reach:
         print('Warning: Target out of reach. Clamping to max extent.')
         ratio = max_reach / D
         r_wc = r_wc * ratio
         z_wc = z_wc * ratio
         D = max_reach
-         
-    # --- Step 3: Elbow Angle (q3) ---
-    cos_alpha = (L2**2 + L3**2 - D**2) / (2*L2*L3)
+
+    # --- Step 3: Elbow Angle ---
+    cos_alpha = (L_prox**2 + L_dist**2 - D**2) / (2 * L_prox * L_dist)
     cos_alpha = np.clip(cos_alpha, -1.0, 1.0)
     alpha = np.arccos(cos_alpha)
-    
-    # --- Step 4: Shoulder Angle (q2) ---
-    beta = np.arctan2(z_wc, r_wc)
-    cos_psi = (L2**2 + D**2 - L3**2) / (2*L2*D)
+
+    # --- Step 4: Shoulder Angle ---
+    beta_r = np.arctan2(z_wc, r_wc)
+    cos_psi = (L_prox**2 + D**2 - L_dist**2) / (2 * L_prox * D)
     cos_psi = np.clip(cos_psi, -1.0, 1.0)
     psi = np.arccos(cos_psi)
-    
+
     if method == 'elbow_up':
-        # Solution 1 (Elbow Up)
-        q2_geom = beta + psi
+        q2_geom = beta_r + psi
         q3_geom = (np.pi - alpha)
     else:
-        # Solution 2 (Elbow Down)
-        q2_geom = beta - psi
+        q2_geom = beta_r - psi
         q3_geom = -(np.pi - alpha)
-    
-    # Mapping to Joint Angles with Baseline Offsets
-    # Matches DH.py: theta2 = q2 - 90, theta3 = q3 + 90
-    # Correction: q2 axis is inverted relative to geometric angle.
-    # q2_geom=90 (Up) -> theta=-90 (Up) -> q2=0.
-    # q2_geom=0 (Fwd) -> theta=0 (Fwd) -> q2=90.
-    # Relationship: q2 = 90 - q2_geom
-    q2 = 90.0 - np.rad2deg(q2_geom)
-    q3 = np.rad2deg(q3_geom) - 90.0
-    
-    # Calculate q4 to maintain target pitch
-    # Global Pitch = theta2 + theta3 + theta4
-    # But q4 axis appears inverted relative to pitch command:
-    # Negative q4 -> Moves Up. Positive q4 -> Moves Down.
-    # So to achieve Negative Pitch (Down), we need Positive q4 change.
-    # q4 = -Pitch - q2 - q3
+
+    # --- Step 5: Map geometric angles to DH joint angles ---
+    # With slanted-link theta offsets (-90+beta) and (90-beta):
+    q2 = (90.0 - beta_deg) - np.rad2deg(q2_geom)
+    q3 = np.rad2deg(q3_geom) - (90.0 - beta_deg)
+
+    # --- Step 6: Wrist Angle (q4) ---
+    # Pitch coupling: pitch = -(q2 + q3 + q4)
     q4 = -pitch - q2 - q3
-    
+
     result = [float(q1), float(q2), float(q3), float(q4)]
-    
+
     # Enforce joint limits for safe operation
     result, _ = clamp_joints(result)
-    
+
     return result
+
