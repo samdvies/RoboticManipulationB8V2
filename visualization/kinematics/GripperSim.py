@@ -100,6 +100,11 @@ class GripperSim:
         self._force_pct = 0.0
         self._object_present = False
 
+    def set_jaw_width_mm(self, jaw_width_mm: float):
+        """Set gripper by physical jaw gap (mm)."""
+        target_pct = self.jaw_mm_to_pct(jaw_width_mm)
+        self.set_position_pct(target_pct)
+
     def open(self):
         """Fully open the gripper. Mirrors HardwareInterface.openGripper()."""
         self.set_position_pct(0.0)

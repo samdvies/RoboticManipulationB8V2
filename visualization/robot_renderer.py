@@ -58,10 +58,68 @@ class RobotRenderer:
         # Store current jaw state
         self._current_jaw_width_mm = 40.0  # start fully open
         self._ee_transform = np.eye(4)     # Frame 4 transform cache
+        
+        # Bridge rendering
+        self._bridge_actor = None
             
         # Axes
         self.add_axes()
         self.add_workspace()
+
+    def set_bridge_zone(self, zone=None, gap_y=50.0, pillar_width_y=10.0):
+        """Update or remove the 3D bridge visualization with pillars and deck."""
+        # Remove old actors
+        for attr in ('_bridge_actor', '_bridge_pillar_l', '_bridge_pillar_r', '_bridge_deck'):
+            actor = getattr(self, attr, None)
+            if actor is not None:
+                self.plotter.remove_actor(actor)
+                setattr(self, attr, None)
+            
+        if zone is not None:
+            half_gap = gap_y / 2.0
+            pw = pillar_width_y
+            deck_thickness = 10.0  # top beam is 10mm thick
+            
+            # Left pillar: from y_min to inner edge (-half_gap)
+            pillar_l = pv.Box(bounds=(
+                zone.x_min, zone.x_max,
+                -half_gap - pw, -half_gap,
+                zone.z_min, zone.z_max
+            ))
+            self._bridge_pillar_l = self.plotter.add_mesh(
+                pillar_l, color='#555555', opacity=0.85, show_edges=True
+            )
+            
+            # Right pillar: from inner edge (+half_gap) to y_max  
+            pillar_r = pv.Box(bounds=(
+                zone.x_min, zone.x_max,
+                half_gap, half_gap + pw,
+                zone.z_min, zone.z_max
+            ))
+            self._bridge_pillar_r = self.plotter.add_mesh(
+                pillar_r, color='#555555', opacity=0.85, show_edges=True
+            )
+            
+            # Top deck beam: spans full Y at the top
+            deck = pv.Box(bounds=(
+                zone.x_min, zone.x_max,
+                -half_gap - pw, half_gap + pw,
+                zone.z_max - deck_thickness, zone.z_max
+            ))
+            self._bridge_deck = self.plotter.add_mesh(
+                deck, color='#777777', opacity=0.9, show_edges=True
+            )
+            
+            # Faint red no-go zone overlay (full bounding box)
+            nogo = pv.Box(bounds=(
+                zone.x_min, zone.x_max,
+                zone.y_min, zone.y_max,
+                zone.z_min, zone.z_max
+            ))
+            self._bridge_actor = self.plotter.add_mesh(
+                nogo, color='red', opacity=0.08, show_edges=False
+            )
+
 
     def add_axes(self):
         # Draw custom axes at origin to represent User Coordinates

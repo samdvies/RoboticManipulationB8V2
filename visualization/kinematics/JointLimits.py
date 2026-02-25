@@ -48,23 +48,26 @@ def clamp_joints(q):
     return q_clamped.tolist(), was_clamped.tolist()
 
 
-def validate_joints(q):
+def validate_joints(q, tolerance_deg: float = 0.5):
     """
     Validate joint angles against limits without modifying them.
+    Joints within tolerance_deg of the limit are also flagged as violations,
+    to catch IK-clamped solutions that are at the edge of the workspace.
 
     Args:
         q: list or array of 4 joint angles in degrees
+        tolerance_deg: margin in degrees applied to each limit (default 0.5°)
 
     Returns:
-        is_valid: True if all joints are within limits
-        violations: list of dicts with 'joint', 'name', 'angle', 'min', 'max'
-                    for each joint that exceeds its limits
+        is_valid: True if all joints are within limits (with tolerance margin)
+        violations: list of dicts for each violating joint
     """
     q = np.array(q, dtype=float)
+    tol = float(tolerance_deg)
     violations = []
 
     for i in range(len(q)):
-        if q[i] < JOINT_LIMITS['min'][i] or q[i] > JOINT_LIMITS['max'][i]:
+        if q[i] <= JOINT_LIMITS['min'][i] + tol or q[i] >= JOINT_LIMITS['max'][i] - tol:
             violations.append({
                 'joint': i + 1,
                 'name': JOINT_NAMES[i],

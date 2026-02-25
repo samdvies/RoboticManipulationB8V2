@@ -10,7 +10,7 @@ if parent_dir not in sys.path:
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QSlider, QLabel, QGroupBox, QGridLayout, 
                              QPushButton, QRadioButton, QButtonGroup, QDoubleSpinBox,
-                             QScrollArea)
+                             QScrollArea, QCheckBox)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from pyvistaqt import QtInteractor
 from visualization.robot_renderer import RobotRenderer
@@ -19,6 +19,12 @@ from visualization.kinematics.FK import FK
 from visualization.kinematics.JointLimits import clamp_joints, validate_joints, get_limits, JOINT_NAMES
 from visualization.kinematics.Jacobian import get_jacobian
 from visualization.kinematics.GripperSim import GripperSim
+from visualization.kinematics.BridgeAvoidance import (
+    BridgeNoGoZone,
+    build_bridge_zones,
+    clamp_gripper_width_for_bridge,
+    plan_bridge_safe_waypoints,
+)
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -29,9 +35,29 @@ class MainWindow(QMainWindow):
         # Initialize Python Kinematics
         print("Using Python Kinematics (No MATLAB)")
         
-        self.HOME_POSE = np.array([200, 0, 100, 0]) # X, Y, Z, Pitch
+        self.HOME_POSE = np.array([200, 0, 180, 0]) # X, Y, Z, Pitch
         self.safety_bypass = False
         self.gripper = GripperSim()
+        self.bridge_no_go_zone = BridgeNoGoZone(
+            x_min=187.5, x_max=212.5,   # 25mm wide in X, centered at X=200
+            y_min=-35.0, y_max=35.0,     # outer edges of pillars (50mm gap + 10mm pillar each side)
+            z_min=0.0,   z_max=60.0      # 60mm high from ground
+        )
+        # Pillar geometry (Y ranges) for visual rendering
+        self.bridge_pillar_width_y = 10.0   # each pillar is 10mm thick in Y
+        self.bridge_gap_y = 50.0            # 50mm gap between inner pillar faces
+        self.bridge_zones = build_bridge_zones(
+            self.bridge_no_go_zone,
+            gap_y=self.bridge_gap_y,
+            pillar_width_y=self.bridge_pillar_width_y
+        )
+        self.bridge_approach_margin_mm = 60.0
+        self.bridge_vertical_clearance_mm = 30.0
+        self.bridge_gripper_min_mm = 25.0
+        self.bridge_gripper_max_mm = 50.0
+        self.motion_waypoints = []
+        self.motion_segment_idx = 0
+        self.bridge_route_active = False
 
         # Central Widget and Layout
         central_widget = QWidget()
@@ -61,7 +87,7 @@ class MainWindow(QMainWindow):
         controls = [
             ('X', 0, 450, 200),     # Forward range (0 to Max Reach)
             ('Y', -450, 450, 0),    # Left/Right range (± Max Reach)
-            ('Z', 0, 450, 100),     # Up/Down range (0 to Max Height)
+            ('Z', 0, 450, 180),     # Up/Down range (0 to Max Height) -> default 180 avoids bridge!
             ('Pitch', -90, 90, 0)   # Pitch angle
         ]
         
@@ -133,7 +159,7 @@ class MainWindow(QMainWindow):
         self.target_inputs = {}
         target_labels = ['Target X', 'Target Y', 'Target Z', 'Target Pitch']
         target_keys = ['x', 'y', 'z', 'pitch']
-        defaults = [200, 0, 100, 0]
+        defaults = [200, 0, 30, 0] # Default target is UNDER the bridge (bridge deck at Z=60)
         
         for i, key in enumerate(target_keys):
             lbl = QLabel(target_labels[i])
@@ -278,8 +304,8 @@ class MainWindow(QMainWindow):
         grip_params = QGridLayout()
         grip_params.addWidget(QLabel("Object mm:"), 0, 0)
         self.grip_obj_spin = QDoubleSpinBox()
-        self.grip_obj_spin.setRange(0, 50)
-        self.grip_obj_spin.setValue(25)
+        self.grip_obj_spin.setRange(25, 50)
+        self.grip_obj_spin.setValue(30)
         grip_params.addWidget(self.grip_obj_spin, 0, 1)
         grip_params.addWidget(QLabel("Force %:"), 1, 0)
         self.grip_force_spin = QDoubleSpinBox()
@@ -297,6 +323,56 @@ class MainWindow(QMainWindow):
         grip_layout.addWidget(self.grip_status)
 
         control_layout.addWidget(grip_group)
+
+        # ── Bridge Control Group ───────────────────────────────────────
+        bridge_group = QGroupBox("Bridge Control")
+        bridge_layout = QGridLayout()
+        bridge_group.setLayout(bridge_layout)
+
+        self.bridge_enabled_check = QCheckBox("Enable No-Go Zone + Reroute")
+        self.bridge_enabled_check.setChecked(True)
+        self.bridge_enabled_check.stateChanged.connect(lambda _: self.apply_bridge_settings())
+        bridge_layout.addWidget(self.bridge_enabled_check, 0, 0, 1, 4)
+
+        self.bridge_inputs = {}
+        bridge_specs = [
+            ("X Min", "x_min", self.bridge_no_go_zone.x_min),
+            ("X Max", "x_max", self.bridge_no_go_zone.x_max),
+            ("Y Min", "y_min", self.bridge_no_go_zone.y_min),
+            ("Y Max", "y_max", self.bridge_no_go_zone.y_max),
+            ("Z Min", "z_min", self.bridge_no_go_zone.z_min),
+            ("Z Max", "z_max", self.bridge_no_go_zone.z_max),
+            ("Approach mm", "approach_margin", self.bridge_approach_margin_mm),
+            ("Clearance mm", "clearance", self.bridge_vertical_clearance_mm),
+            ("Grip Min mm", "grip_min", self.bridge_gripper_min_mm),
+            ("Grip Max mm", "grip_max", self.bridge_gripper_max_mm),
+        ]
+        for i, (label, key, default) in enumerate(bridge_specs, start=1):
+            lbl = QLabel(label)
+            spin = QDoubleSpinBox()
+            if key in ("grip_min", "grip_max"):
+                spin.setRange(0, 50)
+            elif key in ("approach_margin", "clearance"):
+                spin.setRange(0, 300)
+            elif key.startswith("z_"):
+                spin.setRange(0, 450)
+            else:
+                spin.setRange(-450, 450)
+            spin.setValue(float(default))
+            self.bridge_inputs[key] = spin
+            row = i
+            bridge_layout.addWidget(lbl, row, 0)
+            bridge_layout.addWidget(spin, row, 1)
+
+        self.btn_apply_bridge = QPushButton("Apply Bridge Settings")
+        self.btn_apply_bridge.clicked.connect(self.apply_bridge_settings)
+        bridge_layout.addWidget(self.btn_apply_bridge, len(bridge_specs) + 1, 0, 1, 2)
+
+        self.bridge_status = QLabel("Bridge settings active")
+        self.bridge_status.setStyleSheet("font-family: monospace; font-size: 10px;")
+        bridge_layout.addWidget(self.bridge_status, len(bridge_specs) + 2, 0, 1, 4)
+
+        control_layout.addWidget(bridge_group)
 
         # Back to Home Button
         self.btn_home = QPushButton("BACK TO HOME (BYPASS SAFETY)")
@@ -325,6 +401,8 @@ class MainWindow(QMainWindow):
         
         # Initial Update
         self.update_robot()
+        self.apply_bridge_settings()
+        self._sync_gripper_ui()
 
     def update_robot(self):
         # Get Slider Values
@@ -374,9 +452,9 @@ class MainWindow(QMainWindow):
     def start_motion(self):
         if self.is_moving:
             return
-            
+
         self.safety_bypass = False
-            
+
         # Get targets
         tx = self.target_inputs['x'].value()
         ty = self.target_inputs['y'].value()
@@ -390,43 +468,42 @@ class MainWindow(QMainWindow):
         cz = self.sliders['Z'].value()
         cp = self.sliders['Pitch'].value()
         self.start_pose_mp = np.array([cx, cy, cz, cp])
-        
+
         try:
-            # Current Joint Angles
+            # Current joint state from start pose
             self.start_q = np.array(IK(cx, cy, cz, cp))
             self.current_q_anim = self.start_q.copy()
-            
-            # Target Joint Angles (for Joint Interp)
-            self.target_q = np.array(IK(tx, ty, tz, tp))
-            
-            # Setup Animation
-            self.anim_time = 0
-            self.jac_final_phase = False
-            self.jac_final_time = 0.0
-            self.jac_final_duration = 0.0
-            self.jac_final_start_q = None
-            self.jac_final_target_q = None
-            velocity = self.vel_spin.value() # mm/s (Linear)
-            ang_velocity = 45.0 # deg/s (Angular)
-            
-            dist_lin = np.linalg.norm(self.target_pose_mp[:3] - self.start_pose_mp[:3])
-            dist_rot = abs(self.target_pose_mp[3] - self.start_pose_mp[3])
-            
-            dur_lin = dist_lin / velocity
-            dur_rot = dist_rot / ang_velocity
-            
-            self.duration = max(dur_lin, dur_rot)
-            
-            if self.duration < 0.1: 
-                self.duration = 0.1
-                
-            self.dt = 0.05 # 50ms steps
-            
+
+            if self._is_bridge_enabled():
+                planned_waypoints = plan_bridge_safe_waypoints(
+                    self.start_pose_mp,
+                    self.target_pose_mp,
+                    self.bridge_no_go_zone,
+                    zones=self.bridge_zones,
+                    approach_margin_mm=self.bridge_approach_margin_mm,
+                    vertical_clearance_mm=self.bridge_vertical_clearance_mm,
+                )
+            else:
+                planned_waypoints = [self.target_pose_mp]
+            self.motion_waypoints = [np.array(wp, dtype=float) for wp in planned_waypoints]
+            self.motion_segment_idx = 0
+            self.bridge_route_active = len(self.motion_waypoints) > 1
+
+            self.dt = 0.05  # 50ms steps
             self.is_moving = True
             self.btn_move.setEnabled(False)
-            self.motion_status.setText("Moving...")
+            self._configure_motion_segment(
+                self.start_pose_mp,
+                self.motion_waypoints[self.motion_segment_idx],
+                use_current_q=True,
+            )
+            if self.bridge_route_active:
+                total = len(self.motion_waypoints)
+                self.motion_status.setText(f"Bridge-safe route: segment 1/{total}")
+            else:
+                self.motion_status.setText("Moving...")
             self.timer.start(int(self.dt * 1000))
-            
+
         except Exception as e:
             self.motion_status.setText(f"Error: {str(e)}")
             print(e)
@@ -471,12 +548,184 @@ class MainWindow(QMainWindow):
         self.plotter.camera.position = focal_point + np.array([x, y, z])
         self.plotter.render()
 
-    def stop_motion(self):
+    def _is_bridge_enabled(self):
+        return hasattr(self, 'bridge_enabled_check') and self.bridge_enabled_check.isChecked()
+
+    def apply_bridge_settings(self):
+        try:
+            x_min = self.bridge_inputs["x_min"].value()
+            x_max = self.bridge_inputs["x_max"].value()
+            y_min = self.bridge_inputs["y_min"].value()
+            y_max = self.bridge_inputs["y_max"].value()
+            z_min = self.bridge_inputs["z_min"].value()
+            z_max = self.bridge_inputs["z_max"].value()
+            if x_min > x_max:
+                x_min, x_max = x_max, x_min
+            if y_min > y_max:
+                y_min, y_max = y_max, y_min
+            if z_min > z_max:
+                z_min, z_max = z_max, z_min
+
+            self.bridge_no_go_zone = BridgeNoGoZone(
+                x_min=float(x_min), x_max=float(x_max),
+                y_min=float(y_min), y_max=float(y_max),
+                z_min=float(z_min), z_max=float(z_max),
+            )
+            self.bridge_zones = build_bridge_zones(
+                self.bridge_no_go_zone,
+                gap_y=self.bridge_gap_y,
+                pillar_width_y=self.bridge_pillar_width_y
+            )
+            self.bridge_approach_margin_mm = max(0.0, float(self.bridge_inputs["approach_margin"].value()))
+            self.bridge_vertical_clearance_mm = max(0.0, float(self.bridge_inputs["clearance"].value()))
+
+            grip_min = float(self.bridge_inputs["grip_min"].value())
+            grip_max = float(self.bridge_inputs["grip_max"].value())
+            grip_min = float(np.clip(grip_min, 0.0, 50.0))
+            grip_max = float(np.clip(grip_max, 0.0, 50.0))
+            if grip_min > grip_max:
+                grip_min, grip_max = grip_max, grip_min
+            self.bridge_gripper_min_mm = grip_min
+            self.bridge_gripper_max_mm = grip_max
+
+            # Push normalized values back to inputs
+            self.bridge_inputs["x_min"].setValue(self.bridge_no_go_zone.x_min)
+            self.bridge_inputs["x_max"].setValue(self.bridge_no_go_zone.x_max)
+            self.bridge_inputs["y_min"].setValue(self.bridge_no_go_zone.y_min)
+            self.bridge_inputs["y_max"].setValue(self.bridge_no_go_zone.y_max)
+            self.bridge_inputs["z_min"].setValue(self.bridge_no_go_zone.z_min)
+            self.bridge_inputs["z_max"].setValue(self.bridge_no_go_zone.z_max)
+            self.bridge_inputs["approach_margin"].setValue(self.bridge_approach_margin_mm)
+            self.bridge_inputs["clearance"].setValue(self.bridge_vertical_clearance_mm)
+            self.bridge_inputs["grip_min"].setValue(self.bridge_gripper_min_mm)
+            self.bridge_inputs["grip_max"].setValue(self.bridge_gripper_max_mm)
+
+            state = "ON" if self._is_bridge_enabled() else "OFF"
+            self.bridge_status.setText(
+                f"Bridge[{state}] x=({self.bridge_no_go_zone.x_min:.0f},{self.bridge_no_go_zone.x_max:.0f}) "
+                f"y=({self.bridge_no_go_zone.y_min:.0f},{self.bridge_no_go_zone.y_max:.0f}) "
+                f"z=({self.bridge_no_go_zone.z_min:.0f},{self.bridge_no_go_zone.z_max:.0f}) "
+                f"grip=({self.bridge_gripper_min_mm:.0f}-{self.bridge_gripper_max_mm:.0f})"
+            )
+            
+            # Update 3D visualization
+            if self._is_bridge_enabled():
+                self.renderer.set_bridge_zone(
+                    self.bridge_no_go_zone,
+                    gap_y=self.bridge_gap_y,
+                    pillar_width_y=self.bridge_pillar_width_y
+                )
+            else:
+                self.renderer.set_bridge_zone(None)
+                
+            self._sync_gripper_ui()
+        except Exception as e:
+            self.bridge_status.setText(f"Bridge settings error: {e}")
+
+    def _configure_motion_segment(self, start_pose, target_pose, use_current_q=False):
+        self.start_pose_mp = np.array(start_pose, dtype=float)
+        self.target_pose_mp = np.array(target_pose, dtype=float)
+
+        if use_current_q:
+            self.start_q = self.current_q_anim.copy()
+        else:
+            self.start_q = np.array(IK(
+                self.start_pose_mp[0],
+                self.start_pose_mp[1],
+                self.start_pose_mp[2],
+                self.start_pose_mp[3]
+            ))
+            self.current_q_anim = self.start_q.copy()
+
+        self.target_q = np.array(IK(
+            self.target_pose_mp[0],
+            self.target_pose_mp[1],
+            self.target_pose_mp[2],
+            self.target_pose_mp[3]
+        ))
+
+        self.anim_time = 0.0
+        self.jac_final_phase = False
+        self.jac_final_time = 0.0
+        self.jac_final_duration = 0.0
+        self.jac_final_start_q = None
+        self.jac_final_target_q = None
+
+        velocity = max(float(self.vel_spin.value()), 1.0)  # mm/s
+        ang_velocity = 45.0  # deg/s
+        dist_lin = np.linalg.norm(self.target_pose_mp[:3] - self.start_pose_mp[:3])
+        dist_rot = abs(self.target_pose_mp[3] - self.start_pose_mp[3])
+        self.duration = max(dist_lin / velocity, dist_rot / ang_velocity, 0.1)
+
+    def _current_pose_from_q(self, q):
+        T_ee, _ = FK(q)
+        return np.array([
+            T_ee[0, 3],
+            T_ee[1, 3],
+            T_ee[2, 3],
+            -(q[1] + q[2] + q[3]),
+        ], dtype=float)
+
+    def _advance_motion_segment_or_finish(self, final_message):
+        next_idx = self.motion_segment_idx + 1
+        if next_idx < len(self.motion_waypoints):
+            self.motion_segment_idx = next_idx
+            start_pose = self._current_pose_from_q(self.current_q_anim)
+            self._configure_motion_segment(
+                start_pose,
+                self.motion_waypoints[self.motion_segment_idx],
+                use_current_q=True,
+            )
+            if self.bridge_route_active:
+                total = len(self.motion_waypoints)
+                self.motion_status.setText(
+                    f"Bridge-safe route: segment {self.motion_segment_idx + 1}/{total}"
+                )
+            else:
+                self.motion_status.setText("Moving...")
+            return
+
+        if self.bridge_route_active and "Bridge-safe route" not in final_message:
+            final_message = final_message.rstrip(".") + " (Bridge-safe route)."
+        self._finish_motion(final_message)
+
+    def _finish_motion(self, status_text):
         self.is_moving = False
         self.timer.stop()
         self.btn_move.setEnabled(True)
-        self.motion_status.setText("Stopped.")
+        self.motion_status.setText(status_text)
         self.safety_bypass = False
+
+    def _check_bridge_collision(self, global_transforms):
+        if not self._is_bridge_enabled():
+            return False, "", np.zeros(3, dtype=float)
+            
+        links_to_check = [
+            ("Base to Shoulder", 0),
+            ("Upper Arm", 1),
+            ("Forearm", 2),
+            ("Wrist", 3),
+        ]
+        
+        for label, idx in links_to_check:
+            if idx + 1 >= len(global_transforms):
+                continue
+                
+            p_start = np.array(global_transforms[idx])[:3, 3]
+            p_end = np.array(global_transforms[idx+1])[:3, 3]
+            
+            # Use 10 samples along each link segment
+            from visualization.kinematics.BridgeAvoidance import segment_intersects_no_go_zone
+            collision_zones = self.bridge_zones if hasattr(self, 'bridge_zones') else [self.bridge_no_go_zone]
+            if segment_intersects_no_go_zone(p_start, p_end, collision_zones, samples=10):
+                # Return the midpoint of the link as the collision point for logging
+                p_mid = (p_start + p_end) / 2.0
+                return True, label, p_mid
+                
+        return False, "", np.zeros(3, dtype=float)
+
+    def stop_motion(self):
+        self._finish_motion("Stopped.")
 
     def update_motion(self):
         if not self.is_moving:
@@ -488,6 +737,10 @@ class MainWindow(QMainWindow):
             t_normalized = 1.0
             
         mode = self.mode_group.checkedId()
+        # Force Task Interpolation (straight line) if following a bridge-safe detour
+        # The bridge detour planner only guarantees safety for linear task-space paths!
+        if self.bridge_route_active:
+            mode = 1
         
         new_q = None
         
@@ -509,8 +762,8 @@ class MainWindow(QMainWindow):
                     s = np.clip(s, 0.0, 1.0)
                     new_q = self.jac_final_start_q + (self.jac_final_target_q - self.jac_final_start_q) * s
                     if s >= 1.0:
-                        self.stop_motion()
-                        self.motion_status.setText("Target Reached (Jac Hybrid).")
+                        self.current_q_anim = new_q
+                        self._advance_motion_segment_or_finish("Target Reached (Jac Hybrid).")
                         return
                 else:
                     current_fk_T, _ = FK(self.current_q_anim)
@@ -574,22 +827,30 @@ class MainWindow(QMainWindow):
                         
                     except np.linalg.LinAlgError:
                         print("Jacobian Singularity")
-                        self.stop_motion()
+                        self._finish_motion("Jacobian Singularity.")
                         return
             
             # --- SAFETY CHECK: Z Floor ---
             if new_q is not None:
-                T_check, _ = FK(new_q)
+                T_check, tf_check = FK(new_q)
                 z_check = T_check[2, 3]
                 
-                Z_LIMIT = 20.0
+                Z_LIMIT = 10.0
                 
                 if z_check < Z_LIMIT and not self.safety_bypass:
                     if z_check > (z_prev + 0.01): 
                         pass 
                     else:
-                        self.stop_motion()
-                        self.motion_status.setText(f"SAFETY STOP: Z ({z_check:.1f}) < {Z_LIMIT}mm!")
+                        self._finish_motion(f"SAFETY STOP: Z ({z_check:.1f}) < {Z_LIMIT}mm!")
+                        return
+
+                if not self.safety_bypass:
+                    is_collision, part_name, p_xyz = self._check_bridge_collision(tf_check)
+                    if is_collision:
+                        self._finish_motion(
+                            f"SAFETY STOP: {part_name} entered bridge no-go zone "
+                            f"at [{p_xyz[0]:.1f}, {p_xyz[1]:.1f}, {p_xyz[2]:.1f}]"
+                        )
                         return
             
             if new_q is not None:
@@ -620,8 +881,7 @@ class MainWindow(QMainWindow):
                 self.update_explicit_q(new_q)
             
             if t_normalized >= 1.0 and mode != 2:
-                self.stop_motion()
-                self.motion_status.setText("Target Reached.")
+                self._advance_motion_segment_or_finish("Target Reached.")
                 
         except Exception as e:
             print(f"Motion Error: {e}")
@@ -678,8 +938,21 @@ class MainWindow(QMainWindow):
             self.gripper.grip_force(self.grip_force_spin.value())
         self._sync_gripper_ui()
 
+    def _enforce_bridge_gripper_band(self):
+        if not self._is_bridge_enabled():
+            return
+        jaw_mm = self.gripper.jaw_width_mm
+        clamped = clamp_gripper_width_for_bridge(
+            jaw_mm,
+            min_width_mm=self.bridge_gripper_min_mm,
+            max_width_mm=self.bridge_gripper_max_mm,
+        )
+        if abs(clamped - jaw_mm) > 1e-6:
+            self.gripper.set_jaw_width_mm(clamped)
+
     def _sync_gripper_ui(self):
         """Push gripper state to slider, status label, and 3D renderer."""
+        self._enforce_bridge_gripper_band()
         state = self.gripper.get_state()
         # Update slider without re-triggering
         self.grip_slider.blockSignals(True)
@@ -692,7 +965,8 @@ class MainWindow(QMainWindow):
             f"{mode_str} | {state['pct']:.0f}% | "
             f"Jaw: {state['jaw_width_mm']:.1f}mm | "
             f"Enc: {state['encoder']} | "
-            f"Force: {state['force_pct']:.0f}%"
+            f"Force: {state['force_pct']:.0f}% | "
+            f"Bridge Jaw Band: {self.bridge_gripper_min_mm:.0f}-{self.bridge_gripper_max_mm:.0f}mm"
         )
         # Update 3D jaws
         self.renderer.update_gripper(state['jaw_width_mm'])
