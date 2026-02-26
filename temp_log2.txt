@@ -1,0 +1,10 @@
+﻿a002873 bridge pick working but jerky
+e75fda0 normal picja and place working perfectly
+4f24fab Z changing with radius issue
+7638dd3  adding new branch for new frame defintions
+e3855df jacobian implemented in simulation
+3a5dd9c jacobian implemented but broken (dont use in hardware) major fixes to joint/task interpolation (essentially perfect now
+15cd390 Gripper Control
+45d8053 hardware Ik working
+ffc650c simulation one working
+53c67ce Sim still breaking, starting visual debug

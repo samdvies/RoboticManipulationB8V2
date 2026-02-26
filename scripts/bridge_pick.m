@@ -35,9 +35,15 @@ BRIDGE_Z_MAX = 85;       % mm (deck top)
 BRIDGE_GAP_Y = 50;       % mm (gap between pillars)
 
 % --- Derived Approach Parameters ---
-APPROACH_X  = BRIDGE_X_MIN - 12;   % just in front of bridge (~175.5mm)
-SAFE_Z      = BRIDGE_Z_MAX + 30;   % above deck top (~90mm)
-DROP_Z      = 48;                   % lowest reachable Z at approach X
+APPROACH_X  = BRIDGE_X_MIN - 27;   % well in front of bridge (~190.5mm)
+SAFE_Z      = BRIDGE_Z_MAX + 30;   % above deck top (~115mm)
+MID_Z       = BRIDGE_Z_MAX - 30;   % well below bridge deck (~55mm)
+MID_X       = APPROACH_X + 10;     % intermediate X during diagonal (~200.5mm)
+DIAG_Z      = 50;                  % Z at intermediate diagonal point
+
+% --- Motion Modes ---
+MODE_LINEAR = 2;     % Task-space linear (IK per step) — safe overhead moves
+MODE_JACOBIAN = 3;   % Jacobian hybrid (resolved-rate) — smooth under-bridge
 
 % --- Default Positions ---
 home_pose = [200, 0, 180, 0];     % safe starting position
@@ -47,7 +53,7 @@ fprintf('==========================================\n');
 fprintf('  Bridge Pick (Hardware)\n');
 fprintf('==========================================\n');
 fprintf('  Bridge: X=[%.1f, %.1f] Z=[0, %d]\n', BRIDGE_X_MIN, BRIDGE_X_MAX, BRIDGE_Z_MAX);
-fprintf('  Approach X: %.1f  Safe Z: %d  Drop Z: %d\n', APPROACH_X, SAFE_Z, DROP_Z);
+fprintf('  Approach X: %.1f  Safe Z: %d  Mid Z: %d\n', APPROACH_X, SAFE_Z, MID_Z);
 fprintf('==========================================\n\n');
 
 % --- Get Pick Coordinates ---
@@ -69,22 +75,29 @@ pick_pitch = 0;  % horizontal approach
 fprintf('\n  Pick target: [%.0f, %.0f, %.0f] pitch=%.0f\n\n', ...
     pick_x, pick_y, pick_z, pick_pitch);
 
-% --- Waypoint Path (mirrors Python exit/entry path) ---
-% Entry waypoints: home -> lift -> approach -> drop -> slide to pick
+% --- Waypoint Path (diagonal descent instead of pure vertical drop) ---
+% Entry: home -> lift -> sweep -> small drop -> diagonal -> slide to pick
+%   mode_entry(i) selects linear (2) for safe moves, jacobian (3) for under-bridge
 wp_entry = [
-    home_pose(1), home_pose(2), SAFE_Z,  0;   % 1. Lift to safe Z at current X
+    home_pose(1), home_pose(2), SAFE_Z,  0;   % 1. Lift to safe Z
     APPROACH_X,   pick_y,       SAFE_Z,  0;   % 2. Sweep to approach X above bridge
-    APPROACH_X,   pick_y,       DROP_Z,  0;   % 3. Drop to reachable Z
-    pick_x,       pick_y,       pick_z,  0;   % 4. Slide diagonally to pick
+    APPROACH_X,   pick_y,       MID_Z,   0;   % 3. Small drop below bridge deck
+    MID_X,        pick_y,       DIAG_Z,  0;   % 4. Diagonal: forward + down
+    pick_x,       pick_y,       pick_z,  0;   % 5. Slide to pick position
 ];
+mode_entry = [MODE_LINEAR, MODE_LINEAR, MODE_JACOBIAN, MODE_JACOBIAN, MODE_JACOBIAN];
+time_entry = [MOVE_TIME,   MOVE_TIME,   MOVE_TIME,     SLIDE_TIME,    SLIDE_TIME];
 
-% Exit waypoints: pick -> slide out -> lift -> home
+% Exit: pick -> slide out -> diagonal up -> lift -> sweep -> home
 wp_exit = [
-    APPROACH_X,   pick_y,       DROP_Z,  0;   % 1. Slide out to approach X
-    APPROACH_X,   pick_y,       SAFE_Z,  0;   % 2. Lift above bridge
-    home_pose(1), home_pose(2), SAFE_Z,  0;   % 3. Sweep back
-    home_pose;                                 % 4. Return home
+    MID_X,        pick_y,       DIAG_Z,  0;   % 1. Slide out to mid point
+    APPROACH_X,   pick_y,       MID_Z,   0;   % 2. Diagonal up + back
+    APPROACH_X,   pick_y,       SAFE_Z,  0;   % 3. Lift above bridge
+    home_pose(1), home_pose(2), SAFE_Z,  0;   % 4. Sweep back
+    home_pose;                                 % 5. Return home
 ];
+mode_exit = [MODE_JACOBIAN, MODE_JACOBIAN, MODE_JACOBIAN, MODE_LINEAR, MODE_LINEAR];
+time_exit = [SLIDE_TIME,    SLIDE_TIME,    MOVE_TIME,     MOVE_TIME,   MOVE_TIME];
 
 % --- Reachability Check ---
 fprintf('Checking waypoint reachability...\n');
@@ -92,8 +105,9 @@ check_points = {
     'Home',     home_pose;
     'Lift',     wp_entry(1,:);
     'Approach', wp_entry(2,:);
-    'Drop',     wp_entry(3,:);
-    'Pick',     wp_entry(4,:);
+    'SmallDrop', wp_entry(3,:);
+    'Diagonal', wp_entry(4,:);
+    'Pick',     wp_entry(5,:);
 };
 all_ok = true;
 for i = 1:size(check_points, 1)
@@ -140,21 +154,19 @@ try
 
     % ===== PHASE 1: ENTRY WAYPOINTS =====
     wp_names = {'LIFT above bridge', 'SWEEP to approach X', ...
-                'DROP to reachable Z', 'SLIDE to pick position'};
+                'DROP below bridge deck', 'DIAGONAL forward+down', ...
+                'SLIDE to pick position'};
     
     for i = 1:size(wp_entry, 1)
         wp = wp_entry(i, :);
-        fprintf('[PHASE %d] %s -> [%.0f, %.0f, %.0f]...\n', ...
-            i, wp_names{i}, wp(1), wp(2), wp(3));
+        m = mode_entry(i);
+        t = time_entry(i);
+        mode_str = 'LIN';
+        if m == MODE_JACOBIAN, mode_str = 'JAC'; end
+        fprintf('[PHASE %d] %s -> [%.0f, %.0f, %.0f] (%s)...\n', ...
+            i, wp_names{i}, wp(1), wp(2), wp(3), mode_str);
         
-        if i == 4
-            % Final slide: use slower speed for precision
-            hw.moveToPose(wp(1), wp(2), wp(3), wp(4), ...
-                SLIDE_TIME, MOTION_MODE, Z_FLOOR);
-        else
-            hw.moveToPose(wp(1), wp(2), wp(3), wp(4), ...
-                MOVE_TIME, MOTION_MODE, Z_FLOOR);
-        end
+        hw.moveToPose(wp(1), wp(2), wp(3), wp(4), t, m, Z_FLOOR);
         pause(0.5);
     end
 
@@ -173,30 +185,27 @@ try
     end
 
     % ===== PHASE 5.5: LIFT 7.5mm STRAIGHT UP =====
-    fprintf('[PHASE 5.5] Lifting 7.5mm straight up...\n');
+    fprintf('[PHASE 5.5] Lifting 7.5mm straight up (JAC)...\n');
     hw.moveToPose(pick_x, pick_y, pick_z + 7.5, pick_pitch, ...
-        MOVE_TIME, MOTION_MODE, Z_FLOOR);
+        MOVE_TIME, MODE_JACOBIAN, Z_FLOOR);
     pause(0.5);
 
     % ===== PHASE 6: EXIT WAYPOINTS =====
     input('Press ENTER to retract from bridge...', 's');
     
-    exit_names = {'SLIDE OUT to approach X', 'LIFT above bridge', ...
-                  'SWEEP back', 'Return HOME'};
+    exit_names = {'SLIDE OUT to mid point', 'DIAGONAL up+back', ...
+                  'LIFT above bridge', 'SWEEP back', 'Return HOME'};
     
     for i = 1:size(wp_exit, 1)
         wp = wp_exit(i, :);
-        fprintf('[PHASE %d] %s -> [%.0f, %.0f, %.0f]...\n', ...
-            i+5, exit_names{i}, wp(1), wp(2), wp(3));
+        m = mode_exit(i);
+        t = time_exit(i);
+        mode_str = 'LIN';
+        if m == MODE_JACOBIAN, mode_str = 'JAC'; end
+        fprintf('[PHASE %d] %s -> [%.0f, %.0f, %.0f] (%s)...\n', ...
+            i+5, exit_names{i}, wp(1), wp(2), wp(3), mode_str);
         
-        if i == 1
-            % First retract: slow for safety
-            hw.moveToPose(wp(1), wp(2), wp(3), wp(4), ...
-                SLIDE_TIME, MOTION_MODE, Z_FLOOR);
-        else
-            hw.moveToPose(wp(1), wp(2), wp(3), wp(4), ...
-                MOVE_TIME, MOTION_MODE, Z_FLOOR);
-        end
+        hw.moveToPose(wp(1), wp(2), wp(3), wp(4), t, m, Z_FLOOR);
         pause(0.5);
     end
 
