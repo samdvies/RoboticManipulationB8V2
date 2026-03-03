@@ -11,6 +11,7 @@ Provides:
 
 from dataclasses import dataclass
 from typing import List, Optional
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -210,7 +211,7 @@ def _find_min_safe_z(x, y, pitch, zones,
 
 def _find_safe_approach_x(target_z, target_y, pitch, zones,
                           x_min: float = 50.0, x_max_offset: float = 10.0,
-                          zone_x_min: float = 187.5,
+                          zone_x_min: float = 220.0,
                           tol: float = 2.0) -> float:
     """
     Find the closest approach X (in front of the bridge) where the arm can
@@ -260,18 +261,21 @@ def plan_bridge_safe_waypoints(
     """
     start = _as_pose4(start_pose)
     target = _as_pose4(target_pose)
+
+    def _route_is_safe(start_wp, route_wps):
+        prev = _as_pose4(start_wp)
+        for wp in route_wps:
+            curr = _as_pose4(wp)
+            if _check_path_segment(prev, curr, collision_zones, samples):
+                return False
+            prev = curr
+        return True
     
     # Use multi-zone if available, else single bounding box
     collision_zones = zones if zones else [zone]
 
-    # Quick check: is the direct path already safe?
-    direct_hit = _check_path_segment(start, target, collision_zones, samples)
-    if not direct_hit:
-        return [target]
-
     start_under = start[2] < zone.z_max
     target_under = target[2] < zone.z_max
-    start_horiz = abs(start[3]) <= abs(float(pitch_tolerance_deg))
     target_horiz = abs(target[3]) <= abs(float(pitch_tolerance_deg))
 
     approach_pitch = 0.0
@@ -291,38 +295,66 @@ def plan_bridge_safe_waypoints(
     safe_z = max(min_safe_z, zone.z_max) + abs(float(vertical_clearance_mm))
 
     # ---- EXIT CASE: start is under bridge, target is above ----
-    if start_under and not target_under and start_horiz:
+    # Do not require near-horizontal start pitch here.
+    # The solver can reach under-bridge states with non-zero pitch, and retract
+    # should still use the safe staged exit route from any feasible start pose.
+    if start_under and not target_under:
         empty_zones = [BridgeNoGoZone(0, 0, 0, 0, 0, 0)]
+        exit_x = min(approach_x, zone.x_min - 27.0)  # prefer farther in-front exit
         min_reachable_z = _find_min_safe_z(
-            approach_x, start[1], approach_pitch, empty_zones,
+            exit_x, start[1], approach_pitch, empty_zones,
             z_low=10.0, z_high=safe_z, tol=2.0
         )
         drop_z = max(start[2], min_reachable_z + 5.0)
-        
-        wp_slide_out = [approach_x, start[1], drop_z, start[3]]
-        wp_lift = [approach_x, start[1], safe_z, target[3]]
-        
-        ok = (not _check_path_segment(start, wp_slide_out, collision_zones, samples) and
-              not _check_path_segment(wp_slide_out, wp_lift, collision_zones, samples) and
-              not _check_path_segment(wp_lift, target, collision_zones, samples))
-        if ok:
-            return _dedupe_waypoints([wp_slide_out, wp_lift, target])
-        return _dedupe_waypoints([wp_slide_out, wp_lift, target])
+
+        # Candidate A: under-bridge slide out, then lift, then go target.
+        wp_slide_out = [exit_x, start[1], drop_z, start[3]]
+        wp_lift = [exit_x, start[1], safe_z, target[3]]
+        route_a = _dedupe_waypoints([wp_slide_out, wp_lift, target])
+        if _route_is_safe(start, route_a):
+            return route_a
+
+        # Candidate B: after lift, route via "over target XY" at safe Z.
+        wp_over = [target[0], target[1], safe_z, target[3]]
+        route_b = _dedupe_waypoints([wp_slide_out, wp_lift, wp_over, target])
+        if _route_is_safe(start, route_b):
+            return route_b
+
+        # Candidate C: pure safe-Z dogleg fallback from current XY.
+        wp_up = [start[0], start[1], safe_z, start[3]]
+        route_c = _dedupe_waypoints([wp_up, wp_over, target])
+        if _route_is_safe(start, route_c):
+            return route_c
+
+        # Last fallback: direct target if no safe staged route was found.
+        return [target]
+
+    # ---- UNDER->UNDER CASE: both poses below bridge deck ----
+    # Avoid vertical moves while still inside bridge X-span by sliding out first.
+    if start_under and target_under:
+        exit_x = min(zone.x_min - 27.0, start[0], target[0])
+
+        # Candidate A: slide out at start Z, then adjust to target Z outside bridge span.
+        wp_slide_out = [exit_x, start[1], start[2], start[3]]
+        wp_adjust = [exit_x, target[1], target[2], target[3]]
+        route_a = _dedupe_waypoints([wp_slide_out, wp_adjust, target])
+        if _route_is_safe(start, route_a):
+            return route_a
+
+        # Candidate B: first align XY at low Z, then rise at target XY if safe.
+        wp_xy = [target[0], target[1], start[2], target[3]]
+        route_b = _dedupe_waypoints([wp_xy, target])
+        if _route_is_safe(start, route_b):
+            return route_b
+
+        # Last resort for this special case: keep staged under-bridge route shape.
+        # This avoids collapsing into a straight direct move that often rises inside
+        # bridge span and is more collision-prone in practice.
+        return route_a
 
     # ---- ENTRY CASE: target is under bridge ----
     if target_under and target_horiz:
-        # Mirror the exit strategy: approach from just in front of the bridge,
-        # drop to the lowest reachable Z there, then slide diagonally to target.
-        # This keeps joints in comfortable ranges (no extreme shoulder angles).
-        close_approach_x = zone.x_min - 12.0  # just in front of bridge
-        
-        # Find min reachable Z at close approach X (joint limits only, no bridge)
-        empty_zones = [BridgeNoGoZone(0, 0, 0, 0, 0, 0)]
-        min_reachable_z = _find_min_safe_z(
-            close_approach_x, target[1], approach_pitch, empty_zones,
-            z_low=10.0, z_high=safe_z, tol=2.0
-        )
-        drop_z = max(target[2], min_reachable_z + 5.0)
+        close_approach_x = zone.x_min - 27.0  # just in front of bridge
         
         # Compute safe_z for this close approach X
         close_min_safe_z = _find_min_safe_z(
@@ -331,18 +363,22 @@ def plan_bridge_safe_waypoints(
         )
         close_safe_z = max(close_min_safe_z, zone.z_max) + abs(float(vertical_clearance_mm))
         
-        # Path: lift → move to approach X at safe Z → drop to reachable Z → slide to target
+        mid_z = zone.z_max - 30.0
+        mid_x = close_approach_x + 10.0
+        diag_z = 50.0
+        
+        # Path: lift → sweep to approach → drop to MID_Z → diagonal down+forward → slide to target
         wp_lift = [start[0], start[1], close_safe_z, approach_pitch]
         wp_over = [close_approach_x, target[1], close_safe_z, approach_pitch]
-        wp_low = [close_approach_x, target[1], drop_z, approach_pitch]
+        wp_mid  = [close_approach_x, target[1], mid_z, approach_pitch]
+        wp_diag = [mid_x, target[1], diag_z, target[3]]
         
-        ok = (not _check_path_segment(start, wp_lift, collision_zones, samples) and
-              not _check_path_segment(wp_lift, wp_over, collision_zones, samples) and
-              not _check_path_segment(wp_over, wp_low, collision_zones, samples) and
-              not _check_path_segment(wp_low, target, collision_zones, samples))
-        if ok:
-            return _dedupe_waypoints([wp_lift, wp_over, wp_low, target])
-        return _dedupe_waypoints([wp_lift, wp_over, wp_low, target])
+        return _dedupe_waypoints([wp_lift, wp_over, wp_mid, wp_diag, target])
+
+    # Quick check: for non-special cases, allow direct path if safe.
+    direct_hit = _check_path_segment(start, target, collision_zones, samples)
+    if not direct_hit:
+        return [target]
 
     # ---- GENERAL CASE ----
     wp_up = [start[0], start[1], safe_z, start[3]]
@@ -372,3 +408,213 @@ def clamp_gripper_width_for_bridge(
     if jaw > hi:
         return hi
     return jaw
+
+
+def solve_optimal_pitch(x, y, z, zones, preferred_pitch=0.0,
+                        prev_pitch=None, max_pitch_rate=4.0,
+                        pitch_range=(-60.0, 10.0), margin_deg=5.0,
+                        terminal_target_pitch=None,
+                        terminal_target_weight=200.0,
+                        enforce_terminal_target_if_feasible=False,
+                        bridge_proximity_weight=35.0,
+                        bridge_proximity_decay_mm=12.0,
+                        bridge_proximity_samples=4,
+                        bridge_x_proximity_weight=55.0,
+                        bridge_x_proximity_decay_mm=10.0):
+    """
+    Find the optimal pitch at position (x,y,z) by minimizing a cost function.
+    
+    The cost function penalizes:
+      1. Approaching joint limits (exponentially).
+      2. Approaching bridge collision boundaries.
+      3. Large deviations from the previous pitch (smoothness).
+      
+    Returns optimal pitch in degrees, or None if unreachable.
+    """
+    import math
+    zone_list = zones if isinstance(zones, list) else [zones]
+    
+    def _pitch_is_feasible(p):
+        try:
+            q = IK(x, y, z, p)
+        except Exception:
+            return False
+
+        vmin = JOINT_LIMITS['min'] + margin_deg
+        vmax = JOINT_LIMITS['max'] - margin_deg
+        for i in range(len(q)):
+            if q[i] <= vmin[i] or q[i] >= vmax[i]:
+                return False
+
+        try:
+            _, transforms = FK(q)
+            for j in range(len(transforms) - 1):
+                p_start = transforms[j][:3, 3]
+                p_end = transforms[j + 1][:3, 3]
+                if segment_intersects_no_go_zone(
+                    p_start, p_end, zone_list, samples=5, padding_mm=2.0
+                ):
+                    return False
+        except Exception:
+            return False
+
+        return True
+
+    def _point_to_zone_outside_deltas_mm(point_xyz, zone):
+        """
+        Axis-wise outside deltas from point to AABB.
+        Returns (dx, dy, dz), where each term is 0 if inside interval on that axis.
+        """
+        px, py, pz = [float(v) for v in point_xyz]
+        dx = 0.0
+        if px < zone.x_min:
+            dx = zone.x_min - px
+        elif px > zone.x_max:
+            dx = px - zone.x_max
+
+        dy = 0.0
+        if py < zone.y_min:
+            dy = zone.y_min - py
+        elif py > zone.y_max:
+            dy = py - zone.y_max
+
+        dz = 0.0
+        if pz < zone.z_min:
+            dz = zone.z_min - pz
+        elif pz > zone.z_max:
+            dz = pz - zone.z_max
+
+        return float(dx), float(dy), float(dz)
+
+    def _bridge_proximity_cost(transforms):
+        """
+        Soft penalty for getting close to bridge solids.
+        Cost decays quickly with distance, so far-away links are almost free.
+        """
+        decay = max(1e-6, float(bridge_proximity_decay_mm))
+        x_decay = max(1e-6, float(bridge_x_proximity_decay_mm))
+        samples = max(2, int(bridge_proximity_samples))
+        total_dist = 0.0
+        total_x = 0.0
+        count = 0
+
+        for j in range(len(transforms) - 1):
+            p_start = transforms[j][:3, 3]
+            p_end = transforms[j + 1][:3, 3]
+            for i in range(samples + 1):
+                t = i / samples
+                p = p_start + (p_end - p_start) * t
+                min_dist = float("inf")
+                min_dx = float("inf")
+                for zone in zone_list:
+                    dx, dy, dz = _point_to_zone_outside_deltas_mm(p, zone)
+                    d = float(np.sqrt(dx * dx + dy * dy + dz * dz))
+                    if d < min_dist:
+                        min_dist = d
+                    if dx < min_dx:
+                        min_dx = dx
+
+                # General closeness penalty (all axes).
+                total_dist += np.exp(-min_dist / decay)
+                # Extra X-direction proximity penalty to discourage approaching bridge span in X.
+                total_x += np.exp(-min_dx / x_decay)
+                count += 1
+
+        if count == 0:
+            return 0.0
+        mean_dist = float(total_dist / count)
+        mean_x = float(total_x / count)
+        return (
+            float(bridge_proximity_weight) * mean_dist
+            + float(bridge_x_proximity_weight) * mean_x
+        )
+
+    def evaluate_cost(p):
+        try:
+            q = IK(x, y, z, p)
+        except Exception:
+            return float('inf')
+            
+        # 1. Joint Limit Cost
+        # We want to exponentially penalize being close to the limits
+        cost_limits = 0.0
+        vmin = JOINT_LIMITS['min'] + margin_deg
+        vmax = JOINT_LIMITS['max'] - margin_deg
+        
+        for i in range(len(q)):
+            if q[i] <= vmin[i] or q[i] >= vmax[i]:
+                return float('inf') # Hard violation of margin
+            
+            # Distance from center of joint range (normalized 0 to 1)
+            center = (vmax[i] + vmin[i]) / 2.0
+            range_half = (vmax[i] - vmin[i]) / 2.0
+            norm_dist = abs(q[i] - center) / range_half
+            
+            # Exponential penalty as we approach the edge (norm_dist -> 1)
+            cost_limits += math.exp(norm_dist * 5) - 1.0
+
+        # 2. Collision Cost
+        cost_collision = 0.0
+        cost_proximity = 0.0
+        try:
+            T_ee, transforms = FK(q)
+            for j in range(len(transforms) - 1):
+                p_start = transforms[j][:3, 3]
+                p_end = transforms[j+1][:3, 3]
+                
+                # Check for hard collision using a tighter margin for true safety
+                if segment_intersects_no_go_zone(p_start, p_end, zone_list, samples=5, padding_mm=2.0):
+                    return float('inf')
+
+            # Soft "don't get too close" bridge penalty.
+            cost_proximity = _bridge_proximity_cost(transforms)
+        except Exception:
+            return float('inf')
+
+        # 3. Smoothness + Preference Cost
+        cost_smoothness = 0.0
+        if prev_pitch is not None:
+            delta = abs(p - prev_pitch)
+            if delta > max_pitch_rate:
+                # Heavy penalty for exceeding max rate, but not infinite,
+                # in case it's the ONLY way to avoid a collision.
+                cost_smoothness += 1000.0 * (delta - max_pitch_rate)
+            cost_smoothness += delta * 2.0  # Pull toward previous
+        cost_smoothness += abs(p - preferred_pitch) * 0.5  # Gentle pull to preferred
+
+        # 4. Terminal target preference (hardcoded high weight path support)
+        cost_terminal = 0.0
+        if terminal_target_pitch is not None:
+            cost_terminal = abs(p - float(terminal_target_pitch)) * float(terminal_target_weight)
+
+        return cost_limits + cost_collision + cost_proximity + cost_smoothness + cost_terminal
+
+    # Generate candidates at 1-degree resolution
+    p_min = int(math.floor(pitch_range[0]))
+    p_max = int(math.ceil(pitch_range[1]))
+    
+    # Optional strict terminal lock: choose terminal target immediately if feasible.
+    # This supports "final pick should be 0 deg whenever possible".
+    if terminal_target_pitch is not None and enforce_terminal_target_if_feasible:
+        p0 = float(terminal_target_pitch)
+        if p_min <= p0 <= p_max and _pitch_is_feasible(p0):
+            return p0
+
+    best_pitch = None
+    min_cost = float('inf')
+    
+    for p in range(p_min, p_max + 1):
+        cost = evaluate_cost(float(p))
+        if cost < min_cost:
+            min_cost = cost
+            best_pitch = float(p)
+            
+    # Try the exact previous/preferred pitches as candidates too
+    for p in [prev_pitch, preferred_pitch]:
+        if p is not None:
+            cost = evaluate_cost(float(p))
+            if cost < min_cost:
+                min_cost = cost
+                best_pitch = float(p)
+
+    return best_pitch

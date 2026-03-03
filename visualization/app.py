@@ -24,6 +24,7 @@ from visualization.kinematics.BridgeAvoidance import (
     build_bridge_zones,
     clamp_gripper_width_for_bridge,
     plan_bridge_safe_waypoints,
+    solve_optimal_pitch,
 )
 
 class MainWindow(QMainWindow):
@@ -39,9 +40,9 @@ class MainWindow(QMainWindow):
         self.safety_bypass = False
         self.gripper = GripperSim()
         self.bridge_no_go_zone = BridgeNoGoZone(
-            x_min=187.5, x_max=212.5,   # 25mm wide in X, centered at X=200
-            y_min=-35.0, y_max=35.0,     # outer edges of pillars (50mm gap + 10mm pillar each side)
-            z_min=0.0,   z_max=60.0      # 60mm high from ground
+            x_min=220.0, x_max=230.0,   # 10mm wide in X, centered at default target X=225
+            y_min=-35.0, y_max=35.0,    # outer edges of pillars (50mm gap + 10mm pillar each side)
+            z_min=90.0,  z_max=105.0    # Deck is 15mm thick (105 max height, 90 bottom clearance)
         )
         # Pillar geometry (Y ranges) for visual rendering
         self.bridge_pillar_width_y = 10.0   # each pillar is 10mm thick in Y
@@ -650,6 +651,8 @@ class MainWindow(QMainWindow):
         self.jac_final_duration = 0.0
         self.jac_final_start_q = None
         self.jac_final_target_q = None
+        
+        self._last_solved_pitch = self.start_pose_mp[3]
 
         velocity = max(float(self.vel_spin.value()), 1.0)  # mm/s
         ang_velocity = 45.0  # deg/s
@@ -753,6 +756,45 @@ class MainWindow(QMainWindow):
                 
             elif mode == 1: # Task Interpolation
                 curr_pose_target = self.start_pose_mp + (self.target_pose_mp - self.start_pose_mp) * t_normalized
+
+                # Dynamically solve for the safest continuous pitch
+                if self._is_bridge_enabled():
+                    zones = getattr(self, 'bridge_zones', [self.bridge_no_go_zone])
+                    final_target_pose = (
+                        self.motion_waypoints[-1]
+                        if getattr(self, 'motion_waypoints', None)
+                        else self.target_pose_mp
+                    )
+                    dist_to_final_mm = float(
+                        np.linalg.norm(curr_pose_target[:3] - final_target_pose[:3])
+                    )
+                    # Earlier but smoother pull to 0 deg near target.
+                    sigma_mm = 35.0
+                    proximity = float(np.exp(-((dist_to_final_mm / sigma_mm) ** 2)))
+                    dynamic_zero_weight = 240.0 * proximity
+                    # Slow pitch changes near target to avoid "fast end turn".
+                    dynamic_max_pitch_rate = 0.6 + (2.0 - 0.6) * (1.0 - proximity)
+                    opt_p = solve_optimal_pitch(
+                        curr_pose_target[0], curr_pose_target[1], curr_pose_target[2],
+                        zones=zones,
+                        preferred_pitch=self.target_pose_mp[3],
+                        prev_pitch=getattr(self, '_last_solved_pitch', self.start_pose_mp[3]),
+                        max_pitch_rate=dynamic_max_pitch_rate, # deg/step, slows near target
+                        terminal_target_pitch=0.0,
+                        terminal_target_weight=dynamic_zero_weight,
+                        enforce_terminal_target_if_feasible=False,
+                        bridge_proximity_weight=55.0,
+                        bridge_proximity_decay_mm=12.0,
+                        bridge_x_proximity_weight=95.0,
+                        bridge_x_proximity_decay_mm=9.0,
+                    )
+                    if opt_p is not None:
+                        curr_pose_target[3] = opt_p
+                        self._last_solved_pitch = opt_p
+                    else:
+                        # Fallback
+                        curr_pose_target[3] = getattr(self, '_last_solved_pitch', self.start_pose_mp[3])
+                
                 new_q = IK(curr_pose_target[0], curr_pose_target[1], curr_pose_target[2], curr_pose_target[3])
                 
             elif mode == 2: # Jacobian Control
@@ -977,6 +1019,12 @@ class MainWindow(QMainWindow):
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    window = MainWindow()
+    # Default launcher now opens the focused bridge-pick solver UI.
+    # Use `--legacy-ui` to open the original full controls window.
+    if "--legacy-ui" in sys.argv:
+        window = MainWindow()
+    else:
+        from visualization.bridge_pick_test_app import BridgePickTestWindow
+        window = BridgePickTestWindow()
     window.show()
     sys.exit(app.exec_())

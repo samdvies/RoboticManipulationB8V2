@@ -1,0 +1,10 @@
+addpath(genpath('src'));
+START_X = 225.0; 
+START_Y = 0.0;
+START_Z = 120.0; 
+PITCH   = 0.0;
+q_target = OpenManipulator.IK(START_X, START_Y, START_Z, PITCH);
+disp(q_target);
+[T, transforms] = OpenManipulator.FK(q_target);
+disp('EE Z:');
+disp(T(3,4));

@@ -29,9 +29,9 @@ Z_FLOOR   = 10;      % mm, minimum EE Z
 MOTION_MODE = 2;     % 2 = Task-space linear (straight line)
 
 % --- Bridge Geometry (real specs) ---
-BRIDGE_X_MIN = 217.5;    % mm
-BRIDGE_X_MAX = 232.5;    % mm
-BRIDGE_Z_MAX = 85;       % mm (deck top)
+BRIDGE_X_MIN = 220.0;    % mm
+BRIDGE_X_MAX = 230.0;    % mm
+BRIDGE_Z_MAX = 105;      % mm (deck top)
 BRIDGE_GAP_Y = 50;       % mm (gap between pillars)
 
 % --- Derived Approach Parameters ---
