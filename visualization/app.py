@@ -768,20 +768,28 @@ class MainWindow(QMainWindow):
                     dist_to_final_mm = float(
                         np.linalg.norm(curr_pose_target[:3] - final_target_pose[:3])
                     )
-                    # Earlier but smoother pull to 0 deg near target.
-                    sigma_mm = 35.0
-                    proximity = float(np.exp(-((dist_to_final_mm / sigma_mm) ** 2)))
-                    dynamic_zero_weight = 240.0 * proximity
-                    # Slow pitch changes near target to avoid "fast end turn".
-                    dynamic_max_pitch_rate = 0.6 + (2.0 - 0.6) * (1.0 - proximity)
+                    # Smooth distance ramp: start steering early, then tighten near target.
+                    d_far = 160.0
+                    d_near = 25.0
+                    u = (d_far - dist_to_final_mm) / max(1e-6, (d_far - d_near))
+                    u = float(np.clip(u, 0.0, 1.0))
+                    proximity = u * u * (3.0 - 2.0 * u)  # smoothstep
+
+                    dynamic_target_weight = 25.0 + 220.0 * proximity
+                    dynamic_max_pitch_rate = 1.8 - 0.9 * proximity
+                    desired_pitch = (
+                        (1.0 - proximity) * float(getattr(self, '_last_solved_pitch', self.start_pose_mp[3]))
+                        + proximity * float(self.target_pose_mp[3])
+                    )
                     opt_p = solve_optimal_pitch(
                         curr_pose_target[0], curr_pose_target[1], curr_pose_target[2],
                         zones=zones,
-                        preferred_pitch=self.target_pose_mp[3],
+                        preferred_pitch=desired_pitch,
                         prev_pitch=getattr(self, '_last_solved_pitch', self.start_pose_mp[3]),
                         max_pitch_rate=dynamic_max_pitch_rate, # deg/step, slows near target
-                        terminal_target_pitch=0.0,
-                        terminal_target_weight=dynamic_zero_weight,
+                        pitch_range=(-90.0, 45.0),
+                        terminal_target_pitch=self.target_pose_mp[3],
+                        terminal_target_weight=dynamic_target_weight,
                         enforce_terminal_target_if_feasible=False,
                         bridge_proximity_weight=55.0,
                         bridge_proximity_decay_mm=12.0,

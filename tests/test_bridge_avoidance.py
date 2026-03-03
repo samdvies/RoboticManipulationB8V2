@@ -155,7 +155,7 @@ def test_solve_optimal_pitch_terminal_falls_back_when_zero_infeasible():
     fake_tf = np.eye(4)
     fake_transforms = [fake_tf.copy(), fake_tf.copy()]
 
-    def ik_side_effect(x, y, z, pitch):
+    def ik_side_effect(x, y, z, pitch, *args, **kwargs):
         # Force 0 deg to violate joint limits while allowing negative pitches.
         if abs(float(pitch)) < 1e-6:
             return [200.0, 0.0, 0.0, 0.0]  # q1 beyond limit margin => infeasible
@@ -181,7 +181,7 @@ def test_solve_optimal_pitch_prefers_more_clearance_when_feasible():
     zone = BridgeNoGoZone(170, 230, -60, 60, 90, 130)
     fake_tf = np.eye(4)
 
-    def ik_side_effect(x, y, z, pitch):
+    def ik_side_effect(x, y, z, pitch, *args, **kwargs):
         # Encode pitch into q[0] so FK can distinguish candidates.
         return [float(pitch), 0.0, 0.0, 0.0]
 
@@ -213,6 +213,30 @@ def test_solve_optimal_pitch_prefers_more_clearance_when_feasible():
         assert p <= -1.0
 
 
+def test_solve_optimal_pitch_tracks_far_terminal_target_not_stuck_at_prev_pitch():
+    zone = BridgeNoGoZone(220, 230, -35, 35, 90, 105)
+    fake_tf = np.eye(4)
+    fake_transforms = [fake_tf.copy(), fake_tf.copy()]
+
+    with patch("visualization.kinematics.BridgeAvoidance.IK", return_value=[0.0, 0.0, 0.0, 0.0]), \
+         patch("visualization.kinematics.BridgeAvoidance.FK", return_value=(fake_tf, fake_transforms)), \
+         patch("visualization.kinematics.BridgeAvoidance.segment_intersects_no_go_zone", return_value=False):
+        p = solve_optimal_pitch(
+            150.0, 100.0, 30.0,
+            zones=[zone],
+            preferred_pitch=-90.0,
+            prev_pitch=-60.0,
+            max_pitch_rate=0.6,
+            pitch_range=(-90.0, 10.0),
+            terminal_target_pitch=-90.0,
+            terminal_target_weight=240.0,
+            enforce_terminal_target_if_feasible=False,
+        )
+        assert p is not None
+        # Should move toward target without getting pinned at previous pitch.
+        assert p < -60.0
+
+
 if __name__ == "__main__":
     tests = [
         test_segment_intersection_detects_bridge_hit,
@@ -226,6 +250,7 @@ if __name__ == "__main__":
         test_solve_optimal_pitch_terminal_prefers_zero_when_feasible,
         test_solve_optimal_pitch_terminal_falls_back_when_zero_infeasible,
         test_solve_optimal_pitch_prefers_more_clearance_when_feasible,
+        test_solve_optimal_pitch_tracks_far_terminal_target_not_stuck_at_prev_pitch,
     ]
     passed = 0
     failed = 0

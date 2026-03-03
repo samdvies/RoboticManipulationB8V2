@@ -81,6 +81,7 @@ class BridgePickTestWindow(QMainWindow):
         self._last_solved_pitch = float(self.HOME_POSE[3])
         self.current_q = np.array(IK(*self.HOME_POSE), dtype=float)
         self.current_q_anim = self.current_q.copy()
+        self.user_target_pose = self.HOME_POSE.copy()
 
         self.jac_final_phase = False
         self.jac_final_time = 0.0
@@ -300,12 +301,16 @@ class BridgePickTestWindow(QMainWindow):
 
         self.pose_status = QLabel("EE: -")
         self.joint_status = QLabel("Joints: -")
+        self.target_compare_status = QLabel("Target vs Actual: -")
         self.pose_status.setStyleSheet("font-family: monospace; font-size: 10px;")
         self.joint_status.setStyleSheet("font-family: monospace; font-size: 10px;")
+        self.target_compare_status.setStyleSheet("font-family: monospace; font-size: 10px;")
         self.pose_status.setWordWrap(True)
         self.joint_status.setWordWrap(True)
+        self.target_compare_status.setWordWrap(True)
         layout.addWidget(self.pose_status)
         layout.addWidget(self.joint_status)
+        layout.addWidget(self.target_compare_status)
 
         self.panel_layout.addWidget(group)
 
@@ -434,6 +439,7 @@ class BridgePickTestWindow(QMainWindow):
         T_ee, transforms = FK(self.current_q)
         self.renderer.update_actors(transforms)
         self._update_pose_labels(T_ee, self.current_q)
+        self._update_target_compare_status(T_ee, self.current_q)
 
     def _update_pose_labels(self, T_ee, q):
         x = T_ee[0, 3]
@@ -442,6 +448,33 @@ class BridgePickTestWindow(QMainWindow):
         pitch = -(q[1] + q[2] + q[3])
         self.pose_status.setText(f"EE: x={x:.1f}  y={y:.1f}  z={z:.1f}  pitch={pitch:.1f}")
         self.joint_status.setText(f"Joints: q1={q[0]:.1f}  q2={q[1]:.1f}  q3={q[2]:.1f}  q4={q[3]:.1f}")
+
+    def _update_target_compare_status(self, T_ee, q):
+        if T_ee is None or q is None:
+            return
+        actual_x = float(T_ee[0, 3])
+        actual_y = float(T_ee[1, 3])
+        actual_z = float(T_ee[2, 3])
+        actual_pitch = float(-(q[1] + q[2] + q[3]))
+
+        target = np.array(self.user_target_pose, dtype=float)
+        dx = actual_x - target[0]
+        dy = actual_y - target[1]
+        dz = actual_z - target[2]
+        dp = actual_pitch - target[3]
+        pos_err = float(np.linalg.norm([dx, dy, dz]))
+
+        ok = (pos_err <= 3.0) and (abs(dp) <= 3.0)
+        color = "#4CAF50" if ok else "orange"
+        self.target_compare_status.setStyleSheet(
+            f"font-family: monospace; font-size: 10px; color: {color};"
+        )
+        self.target_compare_status.setText(
+            "Target vs Actual: "
+            f"T=({target[0]:.1f},{target[1]:.1f},{target[2]:.1f},{target[3]:.1f}) "
+            f"A=({actual_x:.1f},{actual_y:.1f},{actual_z:.1f},{actual_pitch:.1f}) "
+            f"Err[pos={pos_err:.1f}mm, pitch={dp:.1f}deg]"
+        )
 
     def _current_pose_from_q(self, q):
         T_ee, _ = FK(q)
@@ -474,6 +507,7 @@ class BridgePickTestWindow(QMainWindow):
             ],
             dtype=float,
         )
+        self.user_target_pose = target_pose.copy()
         start_pose = self._current_pose_from_q(self.current_q)
 
         try:
@@ -629,22 +663,30 @@ class BridgePickTestWindow(QMainWindow):
                     dist_to_final_mm = float(
                         np.linalg.norm(curr_pose_target[:3] - final_target_pose[:3])
                     )
-                    # Earlier but smoother pull to 0 deg near target.
-                    sigma_mm = 35.0
-                    proximity = float(np.exp(-((dist_to_final_mm / sigma_mm) ** 2)))
-                    dynamic_zero_weight = 240.0 * proximity
-                    # Slow pitch changes near target to avoid "fast end turn".
-                    dynamic_max_pitch_rate = 0.6 + (2.0 - 0.6) * (1.0 - proximity)
+                    # Smooth distance ramp: start steering early, then tighten near target.
+                    d_far = 160.0
+                    d_near = 25.0
+                    u = (d_far - dist_to_final_mm) / max(1e-6, (d_far - d_near))
+                    u = float(np.clip(u, 0.0, 1.0))
+                    proximity = u * u * (3.0 - 2.0 * u)  # smoothstep
+
+                    dynamic_target_weight = 25.0 + 220.0 * proximity
+                    dynamic_max_pitch_rate = 1.8 - 0.9 * proximity
+                    desired_pitch = (
+                        (1.0 - proximity) * float(self._last_solved_pitch)
+                        + proximity * float(self.target_pose_mp[3])
+                    )
                     opt_p = solve_optimal_pitch(
                         curr_pose_target[0],
                         curr_pose_target[1],
                         curr_pose_target[2],
                         zones=self.bridge_zones,
-                        preferred_pitch=self.target_pose_mp[3],
+                        preferred_pitch=desired_pitch,
                         prev_pitch=self._last_solved_pitch,
                         max_pitch_rate=dynamic_max_pitch_rate,
-                        terminal_target_pitch=0.0,
-                        terminal_target_weight=dynamic_zero_weight,
+                        pitch_range=(-90.0, 45.0),
+                        terminal_target_pitch=self.target_pose_mp[3],
+                        terminal_target_weight=dynamic_target_weight,
                         enforce_terminal_target_if_feasible=False,
                         bridge_proximity_weight=55.0,
                         bridge_proximity_decay_mm=12.0,
@@ -767,6 +809,7 @@ class BridgePickTestWindow(QMainWindow):
                 T_ee, transforms = FK(self.current_q)
                 self.renderer.update_actors(transforms)
                 self._update_pose_labels(T_ee, self.current_q)
+                self._update_target_compare_status(T_ee, self.current_q)
 
             if t_normalized >= 1.0 and mode != self.MODE_JACOBIAN:
                 self._advance_motion_segment_or_finish("Target reached.")

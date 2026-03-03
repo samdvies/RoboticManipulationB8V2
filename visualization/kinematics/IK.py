@@ -3,7 +3,7 @@ import numpy as np
 from .DH import get_dh
 from .JointLimits import clamp_joints
 
-def IK(x, y, z, pitch, method='elbow_up'):
+def IK(x, y, z, pitch, method='elbow_up', warn=True):
     """
     IK Inverse Kinematics for OpenManipulator-X
 
@@ -38,7 +38,8 @@ def IK(x, y, z, pitch, method='elbow_up'):
     # Check reachability
     max_reach = L_prox + L_dist
     if D > max_reach:
-        print('Warning: Target out of reach. Clamping to max extent.')
+        if warn:
+            print("Warning: Target out of reach. Clamping to max extent.")
         ratio = max_reach / D
         r_wc = r_wc * ratio
         z_wc = z_wc * ratio
@@ -74,7 +75,7 @@ def IK(x, y, z, pitch, method='elbow_up'):
     result = [float(q1), float(q2), float(q3), float(q4)]
 
     # Enforce joint limits for safe operation
-    result, _ = clamp_joints(result)
+    result, _ = clamp_joints(result, warn=bool(warn))
 
     return result
 

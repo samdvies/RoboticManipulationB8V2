@@ -1,15 +1,14 @@
-
 import numpy as np
 
 # Joint limits in DEGREES for OpenManipulator-X (4 joints)
-# Joint 1 (Base):     ±90°  — User restriction: front half-plane only
-# Joint 2 (Shoulder): ±117° — Conservative safe default
-# Joint 3 (Elbow):    ±117° — Conservative safe default
-# Joint 4 (Wrist):    ±117° — Conservative safe default
+# Joint 1 (Base): +/-90 deg - user restriction: front half-plane only
+# Joint 2 (Shoulder): +/-117 deg - conservative safe default
+# Joint 3 (Elbow): +/-117 deg - conservative safe default
+# Joint 4 (Wrist): +/-117 deg - conservative safe default
 
 JOINT_LIMITS = {
     'min': np.array([-90.0, -117.0, -117.0, -117.0]),
-    'max': np.array([ 90.0,  117.0,  117.0,  117.0]),
+    'max': np.array([90.0, 117.0, 117.0, 117.0]),
 }
 
 JOINT_NAMES = ['Base', 'Shoulder', 'Elbow', 'Wrist']
@@ -24,12 +23,14 @@ def get_limits():
     }
 
 
-def clamp_joints(q):
+def clamp_joints(q, warn: bool = True, min_delta_warn_deg: float = 0.05):
     """
     Clamp joint angles to their limits.
 
     Args:
         q: list or array of 4 joint angles in degrees [q1, q2, q3, q4]
+        warn: print clamp diagnostics
+        min_delta_warn_deg: suppress tiny clamp deltas below this threshold
 
     Returns:
         q_clamped: numpy array of clamped joint angles (degrees)
@@ -38,12 +39,17 @@ def clamp_joints(q):
     q = np.array(q, dtype=float)
     q_clamped = np.clip(q, JOINT_LIMITS['min'], JOINT_LIMITS['max'])
     was_clamped = ~np.isclose(q, q_clamped)
+    min_delta = max(0.0, float(min_delta_warn_deg))
 
     for i in range(len(q)):
         if was_clamped[i]:
-            print(f"Warning: Joint {i+1} ({JOINT_NAMES[i]}) clamped: "
-                  f"{q[i]:.1f}° -> {q_clamped[i]:.1f}° "
-                  f"(limit: [{JOINT_LIMITS['min'][i]:.0f}°, {JOINT_LIMITS['max'][i]:.0f}°])")
+            delta = abs(float(q[i]) - float(q_clamped[i]))
+            if warn and delta >= min_delta:
+                print(
+                    f"Warning: Joint {i+1} ({JOINT_NAMES[i]}) clamped: "
+                    f"{q[i]:.3f} deg -> {q_clamped[i]:.3f} deg "
+                    f"(delta={delta:.3f}, limit=[{JOINT_LIMITS['min'][i]:.1f}, {JOINT_LIMITS['max'][i]:.1f}] deg)"
+                )
 
     return q_clamped.tolist(), was_clamped.tolist()
 
@@ -56,7 +62,7 @@ def validate_joints(q, tolerance_deg: float = 0.5):
 
     Args:
         q: list or array of 4 joint angles in degrees
-        tolerance_deg: margin in degrees applied to each limit (default 0.5°)
+        tolerance_deg: margin in degrees applied to each limit (default 0.5)
 
     Returns:
         is_valid: True if all joints are within limits (with tolerance margin)

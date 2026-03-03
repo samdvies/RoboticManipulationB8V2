@@ -152,7 +152,7 @@ def _check_path_segment(start_pose, end_pose, zones, samples: int = 20) -> bool:
         pitch = start[3] + (end[3] - start[3]) * t
         
         try:
-            q = IK(p[0], p[1], p[2], pitch)
+            q = IK(p[0], p[1], p[2], pitch, warn=False)
             is_valid, _ = validate_joints(q, tolerance_deg=0)
             if not is_valid:
                 return True
@@ -172,7 +172,7 @@ def _arm_safe_at(x, y, z, pitch, zones) -> bool:
     """Check if the arm at this single pose is collision-free and within joint limits."""
     zone_list = zones if isinstance(zones, list) else [zones]
     try:
-        q = IK(x, y, z, pitch)
+        q = IK(x, y, z, pitch, warn=False)
         is_valid, _ = validate_joints(q, tolerance_deg=0)
         if not is_valid:
             return False
@@ -412,7 +412,7 @@ def clamp_gripper_width_for_bridge(
 
 def solve_optimal_pitch(x, y, z, zones, preferred_pitch=0.0,
                         prev_pitch=None, max_pitch_rate=4.0,
-                        pitch_range=(-60.0, 10.0), margin_deg=5.0,
+                        pitch_range=(-90.0, 45.0), margin_deg=5.0,
                         terminal_target_pitch=None,
                         terminal_target_weight=200.0,
                         enforce_terminal_target_if_feasible=False,
@@ -436,7 +436,7 @@ def solve_optimal_pitch(x, y, z, zones, preferred_pitch=0.0,
     
     def _pitch_is_feasible(p):
         try:
-            q = IK(x, y, z, p)
+            q = IK(x, y, z, p, warn=False)
         except Exception:
             return False
 
@@ -531,7 +531,7 @@ def solve_optimal_pitch(x, y, z, zones, preferred_pitch=0.0,
 
     def evaluate_cost(p):
         try:
-            q = IK(x, y, z, p)
+            q = IK(x, y, z, p, warn=False)
         except Exception:
             return float('inf')
             
@@ -576,10 +576,11 @@ def solve_optimal_pitch(x, y, z, zones, preferred_pitch=0.0,
         if prev_pitch is not None:
             delta = abs(p - prev_pitch)
             if delta > max_pitch_rate:
-                # Heavy penalty for exceeding max rate, but not infinite,
-                # in case it's the ONLY way to avoid a collision.
-                cost_smoothness += 1000.0 * (delta - max_pitch_rate)
-            cost_smoothness += delta * 2.0  # Pull toward previous
+                # Soft quadratic rate-limit overflow penalty.
+                # Keeps motion smooth without forcing end-of-path snaps.
+                excess = (delta - max_pitch_rate)
+                cost_smoothness += 140.0 * (excess ** 2)
+            cost_smoothness += delta * 3.0  # Pull toward previous
         cost_smoothness += abs(p - preferred_pitch) * 0.5  # Gentle pull to preferred
 
         # 4. Terminal target preference (hardcoded high weight path support)
@@ -609,9 +610,16 @@ def solve_optimal_pitch(x, y, z, zones, preferred_pitch=0.0,
             min_cost = cost
             best_pitch = float(p)
             
-    # Try the exact previous/preferred pitches as candidates too
+    # Try exact previous/preferred pitches too, but don't allow preferred to
+    # bypass rate smoothness by jumping far from previous in a single step.
     for p in [prev_pitch, preferred_pitch]:
         if p is not None:
+            if (
+                prev_pitch is not None
+                and max_pitch_rate is not None
+                and abs(float(p) - float(prev_pitch)) > (1.5 * float(max_pitch_rate))
+            ):
+                continue
             cost = evaluate_cost(float(p))
             if cost < min_cost:
                 min_cost = cost
