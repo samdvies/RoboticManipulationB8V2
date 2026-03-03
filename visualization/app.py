@@ -727,6 +727,11 @@ class MainWindow(QMainWindow):
                 
         return False, "", np.zeros(3, dtype=float)
 
+    @staticmethod
+    def _smoothstep01(t: float) -> float:
+        tt = float(np.clip(t, 0.0, 1.0))
+        return tt * tt * (3.0 - 2.0 * tt)
+
     def stop_motion(self):
         self._finish_motion("Stopped.")
 
@@ -738,6 +743,7 @@ class MainWindow(QMainWindow):
         t_normalized = self.anim_time / self.duration
         if t_normalized > 1.0:
             t_normalized = 1.0
+        t_segment = self._smoothstep01(t_normalized)
             
         mode = self.mode_group.checkedId()
         # Force Task Interpolation (straight line) if following a bridge-safe detour
@@ -752,10 +758,10 @@ class MainWindow(QMainWindow):
             z_prev = prev_fk_T[2, 3]
             
             if mode == 0: # Joint Interpolation
-                new_q = self.start_q + (self.target_q - self.start_q) * t_normalized
+                new_q = self.start_q + (self.target_q - self.start_q) * t_segment
                 
             elif mode == 1: # Task Interpolation
-                curr_pose_target = self.start_pose_mp + (self.target_pose_mp - self.start_pose_mp) * t_normalized
+                curr_pose_target = self.start_pose_mp + (self.target_pose_mp - self.start_pose_mp) * t_segment
 
                 # Dynamically solve for the safest continuous pitch
                 if self._is_bridge_enabled():

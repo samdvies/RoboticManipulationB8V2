@@ -633,12 +633,18 @@ class BridgePickTestWindow(QMainWindow):
 
         return False, "", np.zeros(3, dtype=float)
 
+    @staticmethod
+    def _smoothstep01(t: float) -> float:
+        tt = float(np.clip(t, 0.0, 1.0))
+        return tt * tt * (3.0 - 2.0 * tt)
+
     def update_motion(self):
         if not self.is_moving:
             return
 
         self.anim_time += self.dt
         t_normalized = min(self.anim_time / self.duration, 1.0)
+        t_segment = self._smoothstep01(t_normalized)
 
         requested_mode, active_mode, _ = self._resolve_active_mode()
         self._refresh_solver_state()
@@ -652,7 +658,7 @@ class BridgePickTestWindow(QMainWindow):
             if mode == self.MODE_CONTINUOUS:
                 curr_pose_target = self.start_pose_mp + (
                     self.target_pose_mp - self.start_pose_mp
-                ) * t_normalized
+                ) * t_segment
 
                 if self._is_bridge_enabled():
                     final_target_pose = (
