@@ -14,37 +14,37 @@ clear; clc;
 %% ======================== CONFIGURATION ========================
 
 % --- Hardware ---
-COM_PORT  = 'COM4';
+COM_PORT  = '/dev/tty.usbserial-FT9BTEKY';
 BAUDRATE  = 1000000;
-VELOCITY  = 25;           % Dynamixel profile velocity (~5.8 RPM)
+VELOCITY  = 10;           % Dynamixel profile velocity (~2.3 RPM, slowed down)
 DRY_RUN   = false;        % true = IK/FK validation only, no hardware
 
 % --- Motion ---
 MOTION_MODE   = 2;        % 1=Joint, 2=Task Linear (best Z constancy), 3=Jacobian
-MOVE_TIME     = 2.0;      % Base time per segment (seconds)
+MOVE_TIME     = 4.0;      % Base time per segment (seconds, slowed down)
 Z_FLOOR       = 20.0;     % EE Z-floor safety limit (mm)
 
 % --- Task Coordinates (mm) ---
-TOOL_PICK_XY  = [200, -100];     % Tool pickup location (XY)
-GRASP_Z       = 30;              % Z to lower for grasping
-SAFE_Z        = 65;              % Travel height (above gate tops)
-GATE_Z        = 60;              % Z while passing through gates
+TOOL_PICK_XY  = [-50, -200];     % Tool pickup location (XY)
+GRASP_Z       = 50;              % Z to lower for grasping
+SAFE_Z        = 75;              % Travel height (above gate tops)
+GATE_Z        = 70;              % Z while passing through gates
 
-% Gate waypoints — ordered entry → exit for each gate
+% Gate waypoints — move through gates in order
 GATE_WAYPOINTS = [
-    200,  -50;    % Gate 1 entry
-    200,   50;    % Gate 1 exit
-    180,  100;    % Gate 2 entry
-    160,  100;    % Gate 2 exit
-    140,   50;    % Gate 3 entry
-    140,  -50;    % Gate 3 exit
+    100, -175;    % Waypoint 1
+    100,  -75;    % Waypoint 2
+    225,   65;    % Waypoint 3 (Gate entry)
+    225,   35;    % Waypoint 4 (Gate exit)
+    175,    0;    % Waypoint 5
+    175,  100;    % Waypoint 6
 ];
 
-DROP_XY  = [150, 150];    % Drop-off location (XY)
+DROP_XY  = [50, 100];     % Drop-off location (XY)
 DROP_Z   = 50;            % Z for releasing tool
 
 % --- End-Effector Orientation ---
-PITCH    = -90;            % Vertical tool (pointing down)
+PITCH    = -85;            % Tilted tool (to reach further points like 225, 65)
 
 %% ======================== ADD SOURCE PATH ========================
 

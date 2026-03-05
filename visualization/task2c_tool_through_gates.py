@@ -36,26 +36,25 @@ from visualization.kinematics.JointLimits import clamp_joints, validate_joints
 #   Pitch = -90° (vertical tool) is feasible at Z ≤ ~80mm for typical XY.
 #   SAFE_Z is kept at 80mm so the tool stays vertical throughout.
 
-TOOL_PICK_XY   = (200.0, -100.0)   # XY of tool (top-left on the board)
-TOOL_GRASP_Z   = 30.0              # Z to lower to for grasping
-SAFE_Z         = 65.0              # Travel height (just above gate Z, keeps pitch=-90 feasible)
-GATE_Z         = 60.0              # Z while passing through gates
+TOOL_PICK_XY   = (-50.0, -200.0)   # Tool pickup location (XY)
+TOOL_GRASP_Z   = 50.0              # Z to lower to for grasping
+SAFE_Z         = 75.0              # Travel height (just above gate Z, keeps pitch=-90 feasible)
+GATE_Z         = 70.0              # Z while passing through gates
 
-# Gate waypoints — ordered entry → exit for each gate.
-# Robot moves through these in sequence at GATE_Z with constant Z.
+# Gate waypoints — move through gates in order
 GATE_WAYPOINTS_XY = [
-    (200.0,  -50.0),   # Gate 1 entry
-    (200.0,   50.0),   # Gate 1 exit
-    (180.0,  100.0),   # Gate 2 entry
-    (160.0,  100.0),   # Gate 2 exit
-    (140.0,   50.0),   # Gate 3 entry
-    (140.0,  -50.0),   # Gate 3 exit
+    (100.0, -175.0),   # Waypoint 1
+    (100.0,  -75.0),   # Waypoint 2
+    (225.0,   65.0),   # Waypoint 3 (Gate entry)
+    (225.0,   35.0),   # Waypoint 4 (Gate exit)
+    (175.0,    0.0),   # Waypoint 5
+    (175.0,  100.0),   # Waypoint 6
 ]
 
-DROP_XY        = (150.0, 150.0)    # Where to drop the tool
+DROP_XY        = (50.0, 100.0)     # Drop-off location (XY)
 DROP_Z         = 50.0              # Z for releasing
-PITCH_DEG      = -90.0             # EE pitch for grasping / gate traversal
-TRAVEL_PITCH   = -90.0             # EE pitch during travel (vertical, same as work pitch)
+PITCH_DEG      = -85.0             # EE pitch for grasping / gate traversal (tilted to reach further)
+TRAVEL_PITCH   = -85.0             # EE pitch during travel
 STEP_MM        = 5.0               # Interpolation resolution
 
 

@@ -2,7 +2,7 @@ classdef JointLimits
 %JOINTLIMITS Joint limits for safe operation of OpenManipulator-X
 %   Centralised joint limit definitions and clamping utilities.
 %
-%   Joint 1 (Base):     ±90°  — User restriction: front half-plane only
+%   Joint 1 (Base):     ±120° — Extended to reach behind front half-plane
 %   Joint 2 (Shoulder): ±117° — Conservative safe default
 %   Joint 3 (Elbow):    ±117° — Conservative safe default
 %   Joint 4 (Wrist):    ±117° — Conservative safe default
@@ -11,7 +11,7 @@ classdef JointLimits
 
         function limits = GetLimits()
         %GETLIMITS Returns 4x2 matrix [min, max] in degrees
-            limits = [-90,  90;
+            limits = [-120, 120;
                      -117, 117;
                      -117, 117;
                      -117, 117];

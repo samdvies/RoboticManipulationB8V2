@@ -2,14 +2,14 @@
 import numpy as np
 
 # Joint limits in DEGREES for OpenManipulator-X (4 joints)
-# Joint 1 (Base):     ±90°  — User restriction: front half-plane only
+# Joint 1 (Base):     ±120° — Extended to reach behind front half-plane
 # Joint 2 (Shoulder): ±117° — Conservative safe default
 # Joint 3 (Elbow):    ±117° — Conservative safe default
 # Joint 4 (Wrist):    ±117° — Conservative safe default
 
 JOINT_LIMITS = {
-    'min': np.array([-90.0, -117.0, -117.0, -117.0]),
-    'max': np.array([ 90.0,  117.0,  117.0,  117.0]),
+    'min': np.array([-120.0, -117.0, -117.0, -117.0]),
+    'max': np.array([ 120.0,  117.0,  117.0,  117.0]),
 }
 
 JOINT_NAMES = ['Base', 'Shoulder', 'Elbow', 'Wrist']
