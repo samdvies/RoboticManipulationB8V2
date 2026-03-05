@@ -211,7 +211,7 @@ classdef HardwareInterface < handle
             obj.waitForMotion();
         end
 
-        function moveToPose(obj, x, y, z, pitch, time_sec, mode, z_floor_mm)
+        function moveToPose(obj, x, y, z, pitch, time_sec, mode, z_floor_mm, bridge_ctx)
         %MOVETOPOSE High-level move command with selectable motion mode
         %   moveToPose(x, y, z, pitch)
         %   moveToPose(x, y, z, pitch, time_sec)
@@ -220,6 +220,8 @@ classdef HardwareInterface < handle
         %   mode:
         %     1 = Joint interpolation
         %     2 = Task-space linear (IK per step)
+        %         If bridge_ctx.zones is provided, uses continuous pitch
+        %         optimization (MATLAB mirror of Python bridge solver).
         %     3 = Jacobian hybrid (resolved-rate + final joint interpolation)
         %
         %   z_floor_mm:
@@ -228,12 +230,23 @@ classdef HardwareInterface < handle
             if nargin < 6 || isempty(time_sec), time_sec = 2.0; end
             if nargin < 7 || isempty(mode), mode = 1; end
             if nargin < 8 || isempty(z_floor_mm), z_floor_mm = 20.0; end
+            if nargin < 9 || isempty(bridge_ctx), bridge_ctx = []; end
+
+            % If caller already provides a bridge-safe waypoint route, do not
+            % apply extra auto-reroute logic here. This keeps execution
+            % consistent with preplanned Python-style waypoint sequencing.
+            preplanned_route = false;
+            if isstruct(bridge_ctx) && isfield(bridge_ctx, 'preplanned_route')
+                preplanned_route = logical(bridge_ctx.preplanned_route);
+            end
             
             % 1. Get Current Pose
             q_current = obj.readAngles();
             [T_current, ~] = OpenManipulator.FK(q_current);
             start_pos = T_current(1:3, 4);
-            start_pitch = q_current(2) + q_current(3) + q_current(4);
+            % Keep pitch convention identical to IK/Python:
+            % pitch = -(q2 + q3 + q4)
+            start_pitch = -(q_current(2) + q_current(3) + q_current(4));
             
             % 2. Calculate Target Angles
             try
@@ -263,8 +276,13 @@ classdef HardwareInterface < handle
             end
             
             % 4. Execute
+            if preplanned_route
+                obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm, bridge_ctx);
+                return;
+            end
+
             if is_safe
-                obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm);
+                obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm, bridge_ctx);
             else
                 fprintf('  [AUTO-SAFETY] Direct path unsafe. Rerouting via Safe Z...\n');
                 
@@ -280,14 +298,14 @@ classdef HardwareInterface < handle
                 
                 % Waypoint 1: Lift current X,Y to Safe Z
                 q_via1 = OpenManipulator.IK(start_pos(1), start_pos(2), safe_z, pitch);
-                obj.executePoseMove(q_via1, [start_pos(1), start_pos(2), safe_z], pitch, time_sec, mode, z_floor_mm);
+                obj.executePoseMove(q_via1, [start_pos(1), start_pos(2), safe_z], pitch, time_sec, mode, z_floor_mm, bridge_ctx);
                 
                 % Waypoint 2: Move to Target X,Y at Safe Z
                 q_via2 = OpenManipulator.IK(x, y, safe_z, pitch);
-                obj.executePoseMove(q_via2, [x, y, safe_z], pitch, time_sec, mode, z_floor_mm);
+                obj.executePoseMove(q_via2, [x, y, safe_z], pitch, time_sec, mode, z_floor_mm, bridge_ctx);
                 
                 % Waypoint 3: Lower to Target
-                obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm);
+                obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm, bridge_ctx);
             end
         end
 
@@ -376,11 +394,12 @@ classdef HardwareInterface < handle
             obj.verifyPose(q_target);
         end
 
-        function executePoseMove(obj, q_target, target_pos, target_pitch, time_sec, mode, z_floor_mm)
+        function executePoseMove(obj, q_target, target_pos, target_pitch, time_sec, mode, z_floor_mm, bridge_ctx)
         %EXECUTEPOSEMOVE Internal helper to execute a single pose move without rerouting
 
             if nargin < 6 || isempty(mode), mode = 1; end
             if nargin < 7 || isempty(z_floor_mm), z_floor_mm = 20.0; end
+            if nargin < 8 || isempty(bridge_ctx), bridge_ctx = []; end
 
             dt = 0.05;
 
@@ -388,7 +407,9 @@ classdef HardwareInterface < handle
             q_start = obj.readAngles();
             [T_start, ~] = OpenManipulator.FK(q_start);
             start_pos = T_start(1:3, 4);
-            start_pitch = q_start(2) + q_start(3) + q_start(4);
+            % Keep pitch convention identical to IK/Python:
+            % pitch = -(q2 + q3 + q4)
+            start_pitch = -(q_start(2) + q_start(3) + q_start(4));
 
             % Duration / steps (include angular distance)
             dist_lin = norm(target_pos(:) - start_pos(:));
@@ -409,11 +430,61 @@ classdef HardwareInterface < handle
             end
 
             if mode == 2
+                last_solved_pitch = start_pitch;
+                final_target_pose = [target_pos(:)' target_pitch];
+                if isstruct(bridge_ctx) && isfield(bridge_ctx, 'final_target_pose')
+                    final_target_pose = double(bridge_ctx.final_target_pose(:)');
+                end
+                use_dynamic_pitch = false;
+                if isstruct(bridge_ctx) && isfield(bridge_ctx, 'zones') && ~isempty(bridge_ctx.zones)
+                    use_dynamic_pitch = true;
+                    if isfield(bridge_ctx, 'dynamic_pitch')
+                        use_dynamic_pitch = logical(bridge_ctx.dynamic_pitch);
+                    end
+                end
+
                 for step = 1:num_steps
                     s = step / num_steps;
-                    pose = (1 - s) * start_pos(:) + s * target_pos(:);
-                    pitch = (1 - s) * start_pitch + s * target_pitch;
-                    q_interp = OpenManipulator.IK(pose(1), pose(2), pose(3), pitch);
+                    % C1 time scaling for smoother segment entry/exit.
+                    s_smooth = s * s * (3.0 - 2.0 * s);
+                    pose = (1 - s_smooth) * start_pos(:) + s_smooth * target_pos(:);
+
+                    pitch = (1 - s_smooth) * start_pitch + s_smooth * target_pitch;
+                    if use_dynamic_pitch
+                        dist_to_final = norm(pose(:)' - final_target_pose(1:3));
+                        d_far = 160.0;
+                        d_near = 25.0;
+                        u = (d_far - dist_to_final) / max(1e-6, (d_far - d_near));
+                        u = max(0.0, min(1.0, u));
+                        proximity = u * u * (3.0 - 2.0 * u);
+                        dynamic_target_weight = 25.0 + 220.0 * proximity;
+                        dynamic_max_pitch_rate = 1.8 - 0.9 * proximity;
+                        desired_pitch = (1.0 - proximity) * last_solved_pitch + proximity * target_pitch;
+
+                        solve_opts = struct();
+                        solve_opts.preferred_pitch = desired_pitch;
+                        solve_opts.prev_pitch = last_solved_pitch;
+                        solve_opts.max_pitch_rate = dynamic_max_pitch_rate;
+                        solve_opts.pitch_range = [-90.0, 45.0];
+                        solve_opts.terminal_target_pitch = target_pitch;
+                        solve_opts.terminal_target_weight = dynamic_target_weight;
+                        solve_opts.enforce_terminal_target_if_feasible = false;
+                        solve_opts.bridge_proximity_weight = 55.0;
+                        solve_opts.bridge_proximity_decay_mm = 12.0;
+                        solve_opts.bridge_x_proximity_weight = 95.0;
+                        solve_opts.bridge_x_proximity_decay_mm = 9.0;
+
+                        p_opt = OpenManipulator.BridgeAvoidance.SolveOptimalPitch( ...
+                            pose(1), pose(2), pose(3), bridge_ctx.zones, solve_opts);
+                        if ~isempty(p_opt) && isfinite(p_opt)
+                            pitch = p_opt;
+                            last_solved_pitch = p_opt;
+                        else
+                            pitch = last_solved_pitch;
+                        end
+                    end
+
+                    q_interp = OpenManipulator.IK(pose(1), pose(2), pose(3), pitch, 'elbow_up', true);
 
                     % EE-only Z floor safety
                     [T_ee, ~] = OpenManipulator.FK(q_interp);
@@ -430,6 +501,13 @@ classdef HardwareInterface < handle
                 end
 
                 obj.waitForMotion();
+                % End-of-segment lock to reduce residual endpoint drift on hardware.
+                try
+                    q_lock = OpenManipulator.IK(target_pos(1), target_pos(2), target_pos(3), target_pitch, 'elbow_up', false);
+                    obj.moveToAnglesInterpolated(q_lock, 1, z_floor_mm);
+                catch
+                    % Keep best-effort continuous endpoint if exact lock fails.
+                end
                 obj.verifyPose(q_target);
                 return;
             end
@@ -462,7 +540,9 @@ classdef HardwareInterface < handle
                     else
                         [T_curr, ~] = OpenManipulator.FK(current_q);
                         current_pos = T_curr(1:3, 4);
-                        current_pitch = current_q(2) + current_q(3) + current_q(4);
+                        % Keep pitch convention identical to IK/Python:
+                        % pitch = -(q2 + q3 + q4)
+                        current_pitch = -(current_q(2) + current_q(3) + current_q(4));
 
                         error_pos = target_pos(:) - current_pos(:);
                         error_pitch = target_pitch - current_pitch;

@@ -12,9 +12,9 @@ from visualization.kinematics.JointLimits import validate_joints
 
 # Real bridge specs
 zone = BridgeNoGoZone(
-    x_min=187.5, x_max=212.5,
+    x_min=220.0, x_max=230.0,
     y_min=-35.0, y_max=35.0,
-    z_min=0.0,   z_max=60.0
+    z_min=90.0,   z_max=105.0
 )
 zones = build_bridge_zones(zone, gap_y=50.0, pillar_width_y=10.0)
 

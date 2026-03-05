@@ -1,62 +1,56 @@
 %% bridge_pick.m
-% Pick an object from under a bridge using the proven safe waypoint path.
+% Bridge pick hardware script (MATLAB mirror of Python implementation).
 %
-% Strategy (mirrors the Python simulator's verified path):
-%   1. Start at HOME (clear of bridge)
-%   2. Half-shut gripper to fit through bridge gap
-%   3. Lift to safe Z above bridge deck
-%   4. Sweep to approach X (just in front of bridge)
-%   5. Drop to lowest reachable Z at approach X
-%   6. Slide diagonally to pick position (through bridge gap)
-%   7. Close gripper
-%   8. Reverse path to exit
-%
-% Bridge specs: 25mm X-width, 50mm Y-gap between pillars, 60mm tall.
+% Mirrors:
+%   - Bridge no-go decomposition (pillars + deck)
+%   - Bridge-safe waypoint planning
+%   - Continuous pitch solver with bridge proximity costs (in mode 2)
+%   - Smooth segment timing (handled in HardwareInterface mode 2)
 %
 % Usage:
 %   run('scripts/bridge_pick.m')
 
 clc; clear;
-addpath(genpath('../src'));
+scriptDir = fileparts(mfilename('fullpath'));
+addpath(genpath(fullfile(scriptDir, '..', 'src')));
 
 % --- Hardware Configuration ---
 PORT      = 'COM4';
 BAUD      = 1000000;
 VELOCITY  = 20;
-MOVE_TIME = 2.5;     % seconds per standard move
-SLIDE_TIME = 3.0;    % seconds for diagonal slide (slower for precision)
-Z_FLOOR   = 10;      % mm, minimum EE Z
-MOTION_MODE = 2;     % 2 = Task-space linear (straight line)
+MOVE_TIME = 2.5;
+Z_FLOOR   = 10;
+% Hardware-stable default: execute each planned waypoint with joint interpolation.
+% This matches the smoother behavior seen in test_pick_and_place.
+MODE_EXEC = 1;        % 1=Joint interpolation, 2=Task-space
+USE_DYNAMIC_PITCH = false;  % Only relevant when MODE_EXEC=2
 
-% --- Bridge Geometry (real specs) ---
-BRIDGE_X_MIN = 220.0;    % mm
-BRIDGE_X_MAX = 230.0;    % mm
-BRIDGE_Z_MAX = 105;      % mm (deck top)
-BRIDGE_GAP_Y = 50;       % mm (gap between pillars)
+% --- Bridge Geometry ---
+BRIDGE_X_MIN = 220.0;
+BRIDGE_X_MAX = 230.0;
+BRIDGE_Z_MAX = 105.0;
+BRIDGE_GAP_Y = 50.0;
 
-% --- Derived Approach Parameters ---
-APPROACH_X  = BRIDGE_X_MIN - 27;   % well in front of bridge (~190.5mm)
-SAFE_Z      = BRIDGE_Z_MAX + 30;   % above deck top (~115mm)
-MID_Z       = BRIDGE_Z_MAX - 30;   % well below bridge deck (~55mm)
-MID_X       = APPROACH_X + 10;     % intermediate X during diagonal (~200.5mm)
-DIAG_Z      = 50;                  % Z at intermediate diagonal point
+bridge_zone = OpenManipulator.BridgeAvoidance.NewZone( ...
+    BRIDGE_X_MIN, BRIDGE_X_MAX, -35.0, 35.0, 90.0, BRIDGE_Z_MAX);
+bridge_zones = OpenManipulator.BridgeAvoidance.BuildBridgeZones(bridge_zone, BRIDGE_GAP_Y, 10.0, 10.0);
 
-% --- Motion Modes ---
-MODE_LINEAR = 2;     % Task-space linear (IK per step) — safe overhead moves
-MODE_JACOBIAN = 3;   % Jacobian hybrid (resolved-rate) — smooth under-bridge
-
-% --- Default Positions ---
-home_pose = [200, 0, 180, 0];     % safe starting position
-def_pick  = [225, 0, 30];         % default pick coordinates
+% --- Defaults ---
+home_pose = [200, 0, 180, 0];
+def_pick  = [225, 0, 30];
 
 fprintf('==========================================\n');
-fprintf('  Bridge Pick (Hardware)\n');
+fprintf('  Bridge Pick (Hardware, Python Mirror)\n');
 fprintf('==========================================\n');
-fprintf('  Bridge: X=[%.1f, %.1f] Z=[0, %d]\n', BRIDGE_X_MIN, BRIDGE_X_MAX, BRIDGE_Z_MAX);
-fprintf('  Approach X: %.1f  Safe Z: %d  Mid Z: %d\n', APPROACH_X, SAFE_Z, MID_Z);
+fprintf('  Bridge: X=[%.1f, %.1f], Z=[%.1f, %.1f]\n', ...
+    bridge_zone.x_min, bridge_zone.x_max, bridge_zone.z_min, bridge_zone.z_max);
+fprintf('  Exec mode: %d (1=Joint, 2=Task-space)\n', MODE_EXEC);
+if MODE_EXEC == 2
+    fprintf('  Dynamic pitch optimization: %s\n', string(USE_DYNAMIC_PITCH));
+end
 fprintf('==========================================\n\n');
 
-% --- Get Pick Coordinates ---
+% --- User Pick Input ---
 fprintf('Enter pick coordinates:\n');
 fprintf('  X (default %.0f): ', def_pick(1));
 user_in = input('');
@@ -70,151 +64,133 @@ fprintf('  Z (default %.0f): ', def_pick(3));
 user_in = input('');
 if isempty(user_in), pick_z = def_pick(3); else, pick_z = user_in; end
 
-pick_pitch = 0;  % horizontal approach
+pick_pitch = 0.0;
+pick_pose = [pick_x, pick_y, pick_z, pick_pitch];
+lift_after_pick_pose = [pick_x, pick_y, pick_z + 7.5, pick_pitch];
 
-fprintf('\n  Pick target: [%.0f, %.0f, %.0f] pitch=%.0f\n\n', ...
-    pick_x, pick_y, pick_z, pick_pitch);
+planner_opts = struct('pitch_tolerance_deg', 5.0, ...
+                      'vertical_clearance_mm', 30.0, ...
+                      'samples', 20);
 
-% --- Waypoint Path (diagonal descent instead of pure vertical drop) ---
-% Entry: home -> lift -> sweep -> small drop -> diagonal -> slide to pick
-%   mode_entry(i) selects linear (2) for safe moves, jacobian (3) for under-bridge
-wp_entry = [
-    home_pose(1), home_pose(2), SAFE_Z,  0;   % 1. Lift to safe Z
-    APPROACH_X,   pick_y,       SAFE_Z,  0;   % 2. Sweep to approach X above bridge
-    APPROACH_X,   pick_y,       MID_Z,   0;   % 3. Small drop below bridge deck
-    MID_X,        pick_y,       DIAG_Z,  0;   % 4. Diagonal: forward + down
-    pick_x,       pick_y,       pick_z,  0;   % 5. Slide to pick position
-];
-mode_entry = [MODE_LINEAR, MODE_LINEAR, MODE_JACOBIAN, MODE_JACOBIAN, MODE_JACOBIAN];
-time_entry = [MOVE_TIME,   MOVE_TIME,   MOVE_TIME,     SLIDE_TIME,    SLIDE_TIME];
+wp_entry = OpenManipulator.BridgeAvoidance.PlanBridgeSafeWaypoints( ...
+    home_pose, pick_pose, bridge_zone, bridge_zones, planner_opts);
+wp_exit = OpenManipulator.BridgeAvoidance.PlanBridgeSafeWaypoints( ...
+    lift_after_pick_pose, home_pose, bridge_zone, bridge_zones, planner_opts);
 
-% Exit: pick -> slide out -> diagonal up -> lift -> sweep -> home
-wp_exit = [
-    MID_X,        pick_y,       DIAG_Z,  0;   % 1. Slide out to mid point
-    APPROACH_X,   pick_y,       MID_Z,   0;   % 2. Diagonal up + back
-    APPROACH_X,   pick_y,       SAFE_Z,  0;   % 3. Lift above bridge
-    home_pose(1), home_pose(2), SAFE_Z,  0;   % 4. Sweep back
-    home_pose;                                 % 5. Return home
-];
-mode_exit = [MODE_JACOBIAN, MODE_JACOBIAN, MODE_JACOBIAN, MODE_LINEAR, MODE_LINEAR];
-time_exit = [SLIDE_TIME,    SLIDE_TIME,    MOVE_TIME,     MOVE_TIME,   MOVE_TIME];
+fprintf('\nEntry waypoints (%d):\n', size(wp_entry,1));
+for i = 1:size(wp_entry,1)
+    fprintf('  %d) [%.1f, %.1f, %.1f, %.1f]\n', i, wp_entry(i,1), wp_entry(i,2), wp_entry(i,3), wp_entry(i,4));
+end
+fprintf('Exit waypoints (%d):\n', size(wp_exit,1));
+for i = 1:size(wp_exit,1)
+    fprintf('  %d) [%.1f, %.1f, %.1f, %.1f]\n', i, wp_exit(i,1), wp_exit(i,2), wp_exit(i,3), wp_exit(i,4));
+end
 
-% --- Reachability Check ---
-fprintf('Checking waypoint reachability...\n');
-check_points = {
-    'Home',     home_pose;
-    'Lift',     wp_entry(1,:);
-    'Approach', wp_entry(2,:);
-    'SmallDrop', wp_entry(3,:);
-    'Diagonal', wp_entry(4,:);
-    'Pick',     wp_entry(5,:);
-};
+% Reachability quick check
+fprintf('\nChecking key pose reachability...\n');
+check_points = {'Home', home_pose; 'Pick', pick_pose; 'LiftAfterPick', lift_after_pick_pose};
 all_ok = true;
-for i = 1:size(check_points, 1)
-    name = check_points{i,1};
-    p = check_points{i,2};
+for i = 1:size(check_points,1)
+    name = check_points{i,1}; p = check_points{i,2};
     try
-        q = OpenManipulator.IK(p(1), p(2), p(3), p(4));
+        q = OpenManipulator.IK(p(1), p(2), p(3), p(4), 'elbow_up', false);
         [T, ~] = OpenManipulator.FK(q);
         ee = T(1:3,4)';
         err = norm(ee - p(1:3));
-        fprintf('  %-10s [%6.1f, %5.1f, %5.1f] -> q=[%6.1f,%6.1f,%6.1f,%6.1f] err=%.1fmm\n', ...
-            name, p(1), p(2), p(3), q(1), q(2), q(3), q(4), err);
+        fprintf('  %-12s -> q=[%6.1f,%6.1f,%6.1f,%6.1f] err=%.1fmm\n', ...
+            name, q(1), q(2), q(3), q(4), err);
+        if err > 5.0
+            fprintf('  %-12s -> REJECTED: IK/FK endpoint error too high (%.1fmm)\n', name, err);
+            all_ok = false;
+        end
     catch ME
-        fprintf('  %-10s [%6.1f, %5.1f, %5.1f] -> UNREACHABLE: %s\n', ...
-            name, p(1), p(2), p(3), ME.message);
+        fprintf('  %-12s -> UNREACHABLE: %s\n', name, ME.message);
         all_ok = false;
     end
 end
 if ~all_ok
-    fprintf('\n*** Some positions are unreachable! Adjust coordinates. ***\n');
+    fprintf('\n*** Some key poses are unreachable. Aborting. ***\n');
     return;
 end
 
-fprintf('\nAll positions reachable.\n');
-input('Press ENTER to connect and start...', 's');
+input('\nPress ENTER to connect and start...', 's');
 
 try
-    % --- Connect & Configure ---
     hw = OpenManipulator.HardwareInterface(PORT, BAUD);
     cleanup = onCleanup(@() safeShutdown(hw));
     hw.configure(VELOCITY);
     hw.enableTorque();
 
-    % ===== PHASE 0: HOME + HALF-SHUT GRIPPER =====
-    fprintf('\n[PHASE 0] Moving HOME and setting gripper...\n');
+    fprintf('\n[PHASE 0] Move HOME and set bridge-safe jaw width...\n');
     hw.moveToPose(home_pose(1), home_pose(2), home_pose(3), home_pose(4), ...
         MOVE_TIME, 1, Z_FLOOR);
     pause(0.5);
-    
-    % Half-shut gripper to fit through bridge gap (50% = ~20mm jaw width)
-    fprintf('  Setting gripper to HALF-SHUT (50%%)...\n');
-    hw.setGripperPosition(50);
-    pause(1);
+    jaw_pct = 50;
+    hw.setGripperPosition(jaw_pct);
+    pause(0.8);
 
-    % ===== PHASE 1: ENTRY WAYPOINTS =====
-    wp_names = {'LIFT above bridge', 'SWEEP to approach X', ...
-                'DROP below bridge deck', 'DIAGONAL forward+down', ...
-                'SLIDE to pick position'};
-    
-    for i = 1:size(wp_entry, 1)
-        wp = wp_entry(i, :);
-        m = mode_entry(i);
-        t = time_entry(i);
-        mode_str = 'LIN';
-        if m == MODE_JACOBIAN, mode_str = 'JAC'; end
-        fprintf('[PHASE %d] %s -> [%.0f, %.0f, %.0f] (%s)...\n', ...
-            i, wp_names{i}, wp(1), wp(2), wp(3), mode_str);
-        
-        hw.moveToPose(wp(1), wp(2), wp(3), wp(4), t, m, Z_FLOOR);
-        pause(0.5);
+    fprintf('\n[PHASE 1] Entry route to pick...\n');
+    entry_ctx = struct('zones', bridge_zones, ...
+                       'final_target_pose', wp_entry(end,:), ...
+                       'preplanned_route', true, ...
+                       'dynamic_pitch', USE_DYNAMIC_PITCH);
+    for i = 1:size(wp_entry,1)
+        wp = wp_entry(i,:);
+        fprintf('  Entry %d/%d -> [%.1f, %.1f, %.1f, %.1f]\n', ...
+            i, size(wp_entry,1), wp(1), wp(2), wp(3), wp(4));
+        % Keep the final inward approach as task-space linear to hold Z
+        % during slide-in. Other segments can use the default execution mode.
+        exec_mode_wp = MODE_EXEC;
+        if i == size(wp_entry, 1)
+            exec_mode_wp = 2; % Task-space linear final approach
+        end
+        hw.moveToPose(wp(1), wp(2), wp(3), wp(4), MOVE_TIME, exec_mode_wp, Z_FLOOR, entry_ctx);
+        pause(0.3);
     end
 
-    fprintf('\n  === AT PICK POSITION [%.0f, %.0f, %.0f] ===\n', ...
-        pick_x, pick_y, pick_z);
+    % Final pre-pick lock at exact target pose to remove residual Z offset
+    % before user confirms grasp.
+    hw.moveToPose(pick_pose(1), pick_pose(2), pick_pose(3), pick_pose(4), ...
+        max(0.8, 0.5 * MOVE_TIME), 1, Z_FLOOR, entry_ctx);
+    pause(0.2);
 
-    % ===== PHASE 5: GRIP =====
-    choice = input('  Close gripper to pick? (y/n): ', 's');
+    fprintf('\nAt pick position [%.1f, %.1f, %.1f].\n', pick_x, pick_y, pick_z);
+    choice = input('Close gripper to pick? (y/n): ', 's');
     if strcmpi(choice, 'y')
-        fprintf('[PHASE 5] Closing gripper...\n');
         hw.closeGripper();
-        pause(2);
-        fprintf('  Object gripped.\n');
-    else
-        fprintf('  Skipping grip.\n');
+        pause(1.5);
     end
 
-    % ===== PHASE 5.5: LIFT 7.5mm STRAIGHT UP =====
-    fprintf('[PHASE 5.5] Lifting 7.5mm straight up (JAC)...\n');
-    hw.moveToPose(pick_x, pick_y, pick_z + 7.5, pick_pitch, ...
-        MOVE_TIME, MODE_JACOBIAN, Z_FLOOR);
-    pause(0.5);
+    fprintf('\n[PHASE 2] Lift 7.5mm...\n');
+    lift_ctx = struct('zones', bridge_zones, ...
+                      'final_target_pose', lift_after_pick_pose, ...
+                      'preplanned_route', true, ...
+                      'dynamic_pitch', USE_DYNAMIC_PITCH);
+    hw.moveToPose(lift_after_pick_pose(1), lift_after_pick_pose(2), lift_after_pick_pose(3), lift_after_pick_pose(4), ...
+        MOVE_TIME, MODE_EXEC, Z_FLOOR, lift_ctx);
+    pause(0.3);
 
-    % ===== PHASE 6: EXIT WAYPOINTS =====
-    input('Press ENTER to retract from bridge...', 's');
-    
-    exit_names = {'SLIDE OUT to mid point', 'DIAGONAL up+back', ...
-                  'LIFT above bridge', 'SWEEP back', 'Return HOME'};
-    
-    for i = 1:size(wp_exit, 1)
-        wp = wp_exit(i, :);
-        m = mode_exit(i);
-        t = time_exit(i);
-        mode_str = 'LIN';
-        if m == MODE_JACOBIAN, mode_str = 'JAC'; end
-        fprintf('[PHASE %d] %s -> [%.0f, %.0f, %.0f] (%s)...\n', ...
-            i+5, exit_names{i}, wp(1), wp(2), wp(3), mode_str);
-        
-        hw.moveToPose(wp(1), wp(2), wp(3), wp(4), t, m, Z_FLOOR);
-        pause(0.5);
+    input('Press ENTER to retract to HOME...', 's');
+
+    fprintf('\n[PHASE 3] Exit route to HOME...\n');
+    exit_ctx = struct('zones', bridge_zones, ...
+                      'final_target_pose', wp_exit(end,:), ...
+                      'preplanned_route', true, ...
+                      'dynamic_pitch', USE_DYNAMIC_PITCH);
+    for i = 1:size(wp_exit,1)
+        wp = wp_exit(i,:);
+        fprintf('  Exit %d/%d -> [%.1f, %.1f, %.1f, %.1f]\n', ...
+            i, size(wp_exit,1), wp(1), wp(2), wp(3), wp(4));
+        hw.moveToPose(wp(1), wp(2), wp(3), wp(4), MOVE_TIME, MODE_EXEC, Z_FLOOR, exit_ctx);
+        pause(0.3);
     end
 
-    % ===== DONE =====
-    fprintf('\n  Opening gripper...\n');
+    fprintf('\nOpening gripper...\n');
     hw.openGripper();
     pause(0.5);
+
     hw.disconnect();
-    fprintf('\n=== Bridge Pick Complete ===\n');
+    fprintf('\n=== Bridge Pick Complete (Python Mirror) ===\n');
 
 catch ME
     fprintf('\nERROR: %s\n', ME.message);

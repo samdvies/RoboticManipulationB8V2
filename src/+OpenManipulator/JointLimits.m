@@ -1,11 +1,6 @@
 classdef JointLimits
 %JOINTLIMITS Joint limits for safe operation of OpenManipulator-X
 %   Centralised joint limit definitions and clamping utilities.
-%
-%   Joint 1 (Base):     ±90°  — User restriction: front half-plane only
-%   Joint 2 (Shoulder): ±117° — Conservative safe default
-%   Joint 3 (Elbow):    ±117° — Conservative safe default
-%   Joint 4 (Wrist):    ±117° — Conservative safe default
 
     methods (Static)
 
@@ -22,13 +17,13 @@ classdef JointLimits
             names = {'Base', 'Shoulder', 'Elbow', 'Wrist'};
         end
 
-        function [q_clamped, was_clamped] = Clamp(q)
+        function [q_clamped, was_clamped] = Clamp(q, warn, min_delta_warn_deg)
         %CLAMP Clamp joint angles to safe limits
         %   [q_clamped, was_clamped] = Clamp(q)
-        %
-        %   Input:  q - 1x4 joint angles in degrees
-        %   Output: q_clamped   - 1x4 clamped angles
-        %           was_clamped - 1x4 logical array
+        %   [q_clamped, was_clamped] = Clamp(q, warn, min_delta_warn_deg)
+            if nargin < 2 || isempty(warn), warn = true; end
+            if nargin < 3 || isempty(min_delta_warn_deg), min_delta_warn_deg = 0.05; end
+
             limits = OpenManipulator.JointLimits.GetLimits();
             names = OpenManipulator.JointLimits.GetNames();
             q = q(:)';
@@ -39,13 +34,17 @@ classdef JointLimits
                 if q(i) < limits(i, 1)
                     q_clamped(i) = limits(i, 1);
                     was_clamped(i) = true;
-                    fprintf('Warning: Joint %d (%s) clamped: %.1f° -> %.1f° (limit: [%.0f°, %.0f°])\n', ...
-                        i, names{i}, q(i), q_clamped(i), limits(i, 1), limits(i, 2));
                 elseif q(i) > limits(i, 2)
                     q_clamped(i) = limits(i, 2);
                     was_clamped(i) = true;
-                    fprintf('Warning: Joint %d (%s) clamped: %.1f° -> %.1f° (limit: [%.0f°, %.0f°])\n', ...
-                        i, names{i}, q(i), q_clamped(i), limits(i, 1), limits(i, 2));
+                end
+
+                if was_clamped(i)
+                    delta = abs(q(i) - q_clamped(i));
+                    if warn && delta >= min_delta_warn_deg
+                        fprintf('Warning: Joint %d (%s) clamped: %.3f deg -> %.3f deg (delta=%.3f, limit=[%.1f, %.1f] deg)\n', ...
+                            i, names{i}, q(i), q_clamped(i), delta, limits(i, 1), limits(i, 2));
+                    end
                 end
             end
         end
