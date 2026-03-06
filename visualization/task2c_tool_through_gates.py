@@ -60,31 +60,49 @@ STEP_MM        = 5.0               # Interpolation resolution
 
 # ── Motion Generators ─────────────────────────────────────────────────
 
-def interpolate_xy_constant_z(start_pose, end_pose, step_mm=STEP_MM):
-    """Linearly interpolate X and Y while holding Z and pitch constant.
+def _interpolate_axis(start, end, fixed, z, pitch, axis, step_mm):
+    """Interpolate a single axis while holding the other axis and Z fixed."""
+    if axis == "x":
+        if abs(end - start) < 1e-9:
+            return [[start, fixed, z, pitch]]
+        n_steps = max(1, int(math.ceil(abs(end - start) / step_mm)))
+        return [[start + (end - start) * (i / n_steps), fixed, z, pitch] for i in range(n_steps + 1)]
+
+    if abs(end - start) < 1e-9:
+        return [[fixed, start, z, pitch]]
+    n_steps = max(1, int(math.ceil(abs(end - start) / step_mm)))
+    return [[fixed, start + (end - start) * (i / n_steps), z, pitch] for i in range(n_steps + 1)]
+
+
+def interpolate_xy_constant_z(start_pose, end_pose, step_mm=STEP_MM, axis_order="x_then_y"):
+    """Interpolate XY with Manhattan motion while holding Z and pitch constant.
 
     Args:
         start_pose: [x, y, z, pitch]
-        end_pose:   [x, y, z, pitch]  (z and pitch are ignored — start's are used)
+        end_pose:   [x, y, z, pitch] (z and pitch are ignored; start values are used)
         step_mm:    max XY distance per step
+        axis_order: "x_then_y" or "y_then_x"
 
     Returns:
         List of [x, y, z, pitch] poses.
     """
     sx, sy, sz, sp = start_pose
-    ex, ey, _,  _  = end_pose
+    ex, ey, _, _ = end_pose
 
-    dx, dy = ex - sx, ey - sy
-    dist = math.hypot(dx, dy)
-
-    if dist < 1e-9:
+    if abs(ex - sx) < 1e-9 and abs(ey - sy) < 1e-9:
         return [list(start_pose)]
 
-    n_steps = max(1, int(math.ceil(dist / step_mm)))
-    poses = []
-    for i in range(n_steps + 1):
-        t = i / n_steps
-        poses.append([sx + dx * t, sy + dy * t, sz, sp])
+    if axis_order not in ("x_then_y", "y_then_x"):
+        raise ValueError(f"Invalid axis_order: {axis_order}")
+
+    if axis_order == "x_then_y":
+        seg1 = _interpolate_axis(sx, ex, sy, sz, sp, "x", step_mm)
+        seg2 = _interpolate_axis(sy, ey, ex, sz, sp, "y", step_mm)
+    else:
+        seg1 = _interpolate_axis(sy, ey, sx, sz, sp, "y", step_mm)
+        seg2 = _interpolate_axis(sx, ex, ey, sz, sp, "x", step_mm)
+
+    poses = seg1 + seg2[1:]
     return poses
 
 

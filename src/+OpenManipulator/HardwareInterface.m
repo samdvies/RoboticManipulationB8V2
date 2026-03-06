@@ -211,23 +211,19 @@ classdef HardwareInterface < handle
             obj.waitForMotion();
         end
 
-        function moveToPose(obj, x, y, z, pitch, time_sec, mode, z_floor_mm)
+        function moveToPose(obj, x, y, z, pitch, time_sec, mode, z_floor_mm, is_fly)
         %MOVETOPOSE High-level move command with selectable motion mode
         %   moveToPose(x, y, z, pitch)
         %   moveToPose(x, y, z, pitch, time_sec)
         %   moveToPose(x, y, z, pitch, time_sec, mode, z_floor_mm)
+        %   moveToPose(..., z_floor_mm, is_fly)  — is_fly true = higher speed (fly sections)
         %
-        %   mode:
-        %     1 = Joint interpolation
-        %     2 = Task-space linear (IK per step)
-        %     3 = Jacobian hybrid (resolved-rate + final joint interpolation)
-        %
-        %   z_floor_mm:
-        %     End-effector Z floor safety limit (mm)
-        
+        %   mode: 1=Joint, 2=Task-space linear, 3=Jacobian
+        %   is_fly: if true, use higher Cartesian speed limits so fly is obviously faster than bridge
             if nargin < 6 || isempty(time_sec), time_sec = 2.0; end
             if nargin < 7 || isempty(mode), mode = 1; end
             if nargin < 8 || isempty(z_floor_mm), z_floor_mm = 20.0; end
+            if nargin < 9 || isempty(is_fly), is_fly = false; end
             
             % 1. Get Current Pose
             q_current = obj.readAngles();
@@ -242,52 +238,50 @@ classdef HardwareInterface < handle
                 error('IK Failed: Target [%.1f, %.1f, %.1f] unreachable.', x, y, z);
             end
             
-            % 3. Simulate Direct Path
+            % 3. Simulate Direct Path (method depends on mode)
             MIN_Z = z_floor_mm; % End-effector floor limit only
             is_safe = true;
             steps = 10;
-            
-            for i = 1:steps
-                t = i / steps;
-                q_sim = (1-t)*q_current + t*q_target;
-                [T_sim, ~] = OpenManipulator.FK(q_sim);
-                
-                % Check End Effector Z only
-                if T_sim(3,4) < MIN_Z
-                    is_safe = false;
-                    break;
+
+            if mode == 2 || mode == 3
+                % Task-space linear / Jacobian: actual path follows Cartesian direction.
+                % Check commanded pose Z along the segment; do not use joint-space sim (would wrongly trigger reroute).
+                for i = 1:steps
+                    s = i / steps;
+                    pose_sim = (1 - s) * start_pos(:) + s * [x; y; z];
+                    if pose_sim(3) < MIN_Z
+                        is_safe = false;
+                        break;
+                    end
                 end
-                
-                % Optional: Flag unsafe if EE dips below both Start Z and Target Z 
-                % (U-shaped dip collision risk), but simple Elbow check is usually determining factor.
+            else
+                % Joint only: simulate joint-space path for safety.
+                for i = 1:steps
+                    t = i / steps;
+                    q_sim = (1-t)*q_current + t*q_target;
+                    [T_sim, ~] = OpenManipulator.FK(q_sim);
+                    if T_sim(3,4) < MIN_Z
+                        is_safe = false;
+                        break;
+                    end
+                end
             end
             
             % 4. Execute
             if is_safe
-                obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm);
+                obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm, is_fly);
             else
                 fprintf('  [AUTO-SAFETY] Direct path unsafe. Rerouting via Safe Z...\n');
-                
-                % Adaptive Safe Z Strategy
-                % Base clearance: Above highest point of current or target
-                safe_z = max(start_pos(3), z) + 40; 
-                
-                % If moving a significant distance, ensure absolute minimum height (to clear obstacles)
+                safe_z = max(start_pos(3), z) + 40;
                 dist = norm(start_pos - [x, y, z]);
                 if dist > 50
-                    safe_z = max(safe_z, 100); % Force at least 100mm for long moves
+                    safe_z = max(safe_z, 100);
                 end
-                
-                % Waypoint 1: Lift current X,Y to Safe Z
                 q_via1 = OpenManipulator.IK(start_pos(1), start_pos(2), safe_z, pitch);
-                obj.executePoseMove(q_via1, [start_pos(1), start_pos(2), safe_z], pitch, time_sec, mode, z_floor_mm);
-                
-                % Waypoint 2: Move to Target X,Y at Safe Z
+                obj.executePoseMove(q_via1, [start_pos(1), start_pos(2), safe_z], pitch, time_sec, mode, z_floor_mm, is_fly);
                 q_via2 = OpenManipulator.IK(x, y, safe_z, pitch);
-                obj.executePoseMove(q_via2, [x, y, safe_z], pitch, time_sec, mode, z_floor_mm);
-                
-                % Waypoint 3: Lower to Target
-                obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm);
+                obj.executePoseMove(q_via2, [x, y, safe_z], pitch, time_sec, mode, z_floor_mm, is_fly);
+                obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm, false);
             end
         end
 
@@ -376,60 +370,139 @@ classdef HardwareInterface < handle
             obj.verifyPose(q_target);
         end
 
-        function executePoseMove(obj, q_target, target_pos, target_pitch, time_sec, mode, z_floor_mm)
+        function executePoseMove(obj, q_target, target_pos, target_pitch, time_sec, mode, z_floor_mm, is_fly)
         %EXECUTEPOSEMOVE Internal helper to execute a single pose move without rerouting
+        %   is_fly: if true, use higher Cartesian speed so fly sections are obviously faster than bridge.
 
             if nargin < 6 || isempty(mode), mode = 1; end
             if nargin < 7 || isempty(z_floor_mm), z_floor_mm = 20.0; end
+            if nargin < 8 || isempty(is_fly), is_fly = false; end
 
-            dt = 0.05;
+            debug_jitter = false;  % Set true to log step, t, cmd vs actual (diagnose lag vs oscillation)
+            log_verify_pose = true; % Log readAngles+FK (VERIFY START, during segment, VERIFY END). Segment-end jump is from waitForMotion() gap + pause(0.1), not from verify log.
+            dt = 0.02;             % 50 Hz (was 0.05). Higher rate = smoother motion for Mode 2/3.
 
             % Current state (fresh for each segment)
             q_start = obj.readAngles();
             [T_start, ~] = OpenManipulator.FK(q_start);
             start_pos = T_start(1:3, 4);
-            start_pitch = q_start(2) + q_start(3) + q_start(4);
+            % IK uses pitch_deg = -(q2+q3+q4); keep same convention as target_pitch
+            start_pitch = -(q_start(2) + q_start(3) + q_start(4));
 
-            % Duration / steps (include angular distance)
+            % Duration / steps: scale with distance so Cartesian speed is ~constant.
+            % Otherwise short segments (e.g. gate waypoints every 60 mm) each get
+            % time_sec and straight-line phases feel much slower than single long moves.
             dist_lin = norm(target_pos(:) - start_pos(:));
             dist_rot = abs(target_pitch - start_pitch);
             ang_vel_deg_s = 45.0;
+            if is_fly
+                cartesian_speed_mm_s = 180.0;   % Fly: high speed so obviously "flying"
+                max_cartesian_speed_mm_s = 300.0;
+            else
+                cartesian_speed_mm_s = 70.0;    % Bridge / normal straight-line
+                max_cartesian_speed_mm_s = 120.0;
+            end
             if dist_lin > 1e-6
-                dur_lin = max(time_sec, 0.1);
+                dur_lin = dist_lin / cartesian_speed_mm_s;
+                dur_lin = max(dur_lin, 0.15);   % minimum for stability
+                dur_lin = min(dur_lin, time_sec); % cap so one segment doesn't exceed MOVE_TIME
+                dur_lin = max(dur_lin, dist_lin / max_cartesian_speed_mm_s); % no segment faster than max
             else
                 dur_lin = 0.0;
             end
             dur_rot = dist_rot / ang_vel_deg_s;
-            duration = max([dur_lin, dur_rot, 0.1]);
+            duration = max([dur_lin, dur_rot, 0.15]);
             num_steps = max(1, ceil(duration / dt));
+
+            % Skip move when already at target (avoids 0.15s "hold" that can feel like a hiccup before next segment)
+            if dist_lin < 1e-6 && dist_rot < 0.5
+                return;
+            end
+
+            if log_verify_pose
+                fprintf('  [VERIFY START] mode=%d target=[%.1f %.1f %.1f] pitch=%.1f | start_q=[%.1f %.1f %.1f %.1f] start_FK=[%.1f %.1f %.1f]\n', ...
+                    mode, target_pos(1), target_pos(2), target_pos(3), target_pitch, q_start, start_pos(1), start_pos(2), start_pos(3));
+            end
 
             if mode == 1
                 obj.moveToAnglesInterpolated(q_target, num_steps, z_floor_mm);
+                if log_verify_pose
+                    q_act = obj.readAngles();
+                    [T_act, ~] = OpenManipulator.FK(q_act);
+                    pos_act = T_act(1:3, 4);
+                    err_mm = norm(target_pos(:) - pos_act(:));
+                    pitch_act = -(q_act(2) + q_act(3) + q_act(4));
+                    fprintf('  [VERIFY END mode=1] actual_q=[%.1f %.1f %.1f %.1f] actual_FK=[%.1f %.1f %.1f] pitch=%.1f | target=[%.1f %.1f %.1f] err_mm=%.2f\n', ...
+                        q_act, pos_act(1), pos_act(2), pos_act(3), pitch_act, target_pos(1), target_pos(2), target_pos(3), err_mm);
+                end
                 return;
             end
 
             if mode == 2
+                % Task-space linear: interpolate pose, IK each step. Use commanded
+                % pose Z for floor check (trajectory we commit to), not FK(q), so
+                % small IK/clamp errors do not trigger false safety aborts.
                 for step = 1:num_steps
                     s = step / num_steps;
                     pose = (1 - s) * start_pos(:) + s * target_pos(:);
                     pitch = (1 - s) * start_pitch + s * target_pitch;
-                    q_interp = OpenManipulator.IK(pose(1), pose(2), pose(3), pitch);
 
-                    % EE-only Z floor safety
-                    [T_ee, ~] = OpenManipulator.FK(q_interp);
-                    if T_ee(3, 4) < z_floor_mm
-                        error('Motion Safety Violation: EE < %.1fmm. Aborting.', z_floor_mm);
+                    % Safety: abort only if commanded trajectory goes below floor
+                    if pose(3) < z_floor_mm
+                        error('Motion Safety Violation: Commanded Z (%.1f mm) < %.1f mm. Aborting.', pose(3), z_floor_mm);
                     end
+
+                    try
+                        q_interp = OpenManipulator.IK(pose(1), pose(2), pose(3), pitch);
+                    catch ME
+                        error('Mode 2 IK failed at step %d (pose Z=%.1f): %s', step, pose(3), ME.message);
+                    end
+                    [q_interp, ~] = OpenManipulator.JointLimits.Clamp(q_interp);
 
                     encoders = zeros(1, 4);
                     for i = 1:4
                         encoders(i) = obj.deg2enc(q_interp(i));
                     end
                     obj.syncWritePositions(encoders);
+                    if debug_jitter && (mod(step, 5) == 1 || step == num_steps)
+                        q_act = obj.readAngles();
+                        [T_act, ~] = OpenManipulator.FK(q_act);
+                        err_mm = norm(target_pos(:) - T_act(1:3, 4));
+                        fprintf('  [jitter dbg] step %d t=%.2f cmd_q=[%.1f %.1f %.1f %.1f] actual_q=[%.1f %.1f %.1f %.1f] err_mm=%.1f\n', ...
+                            step, step*dt, q_interp, q_act, err_mm);
+                    end
+                    if log_verify_pose && (mod(step, 2) == 0 || step == 1 || step == num_steps)
+                        q_act = obj.readAngles();
+                        [T_act, ~] = OpenManipulator.FK(q_act);
+                        pos_act = T_act(1:3, 4);
+                        err_mm = norm(target_pos(:) - pos_act(:));
+                        fprintf('  [VERIFY mode2] step=%d t=%.2f cmd_q=[%.1f %.1f %.1f %.1f] actual_q=[%.1f %.1f %.1f %.1f] FK=[%.1f %.1f %.1f] err_mm=%.2f\n', ...
+                            step, step*dt, q_interp, q_act, pos_act(1), pos_act(2), pos_act(3), err_mm);
+                    end
+                    pause(dt);
+                end
+
+                % Keep sending target for a short tail so stream doesn't stop abruptly (that caused visible jump before waitForMotion/VERIFY END)
+                encoders = zeros(1, 4);
+                for i = 1:4
+                    encoders(i) = obj.deg2enc(q_target(i));
+                end
+                for tail = 1:5
+                    obj.syncWritePositions(encoders);
                     pause(dt);
                 end
 
                 obj.waitForMotion();
+                % VERIFY END: readAngles + FK + fprintf only (no syncWrite).
+                if log_verify_pose
+                    q_act = obj.readAngles();
+                    [T_act, ~] = OpenManipulator.FK(q_act);
+                    pos_act = T_act(1:3, 4);
+                    err_mm = norm(target_pos(:) - pos_act(:));
+                    pitch_act = -(q_act(2) + q_act(3) + q_act(4));
+                    fprintf('  [VERIFY END mode=2] actual_q=[%.1f %.1f %.1f %.1f] actual_FK=[%.1f %.1f %.1f] pitch=%.1f | target=[%.1f %.1f %.1f] err_mm=%.2f\n', ...
+                        q_act, pos_act(1), pos_act(2), pos_act(3), pitch_act, target_pos(1), target_pos(2), target_pos(3), err_mm);
+                end
                 obj.verifyPose(q_target);
                 return;
             end
@@ -455,14 +528,32 @@ classdef HardwareInterface < handle
                         s = max(0.0, min(1.0, s));
                         new_q = jac_final_start_q + (jac_final_target_q - jac_final_start_q) * s;
                         if s >= 1.0
-                            obj.moveToAnglesInterpolated(new_q, 1, z_floor_mm);
+                            % Send final position; keep sending for short tail so stream doesn't stop abruptly (reduces jump before VERIFY END)
+                            encoders = zeros(1, 4);
+                            for i = 1:4
+                                encoders(i) = obj.deg2enc(jac_final_target_q(i));
+                            end
+                            for tail = 1:5
+                                obj.syncWritePositions(encoders);
+                                pause(dt);
+                            end
+                            obj.waitForMotion();
+                            if log_verify_pose
+                                q_act = obj.readAngles();
+                                [T_act, ~] = OpenManipulator.FK(q_act);
+                                pos_act = T_act(1:3, 4);
+                                err_mm = norm(target_pos(:) - pos_act(:));
+                                fprintf('  [VERIFY END mode=3] actual_q=[%.1f %.1f %.1f %.1f] actual_FK=[%.1f %.1f %.1f] | target=[%.1f %.1f %.1f] err_mm=%.2f\n', ...
+                                    q_act, pos_act(1), pos_act(2), pos_act(3), target_pos(1), target_pos(2), target_pos(3), err_mm);
+                            end
                             obj.verifyPose(jac_final_target_q);
                             return;
                         end
                     else
                         [T_curr, ~] = OpenManipulator.FK(current_q);
                         current_pos = T_curr(1:3, 4);
-                        current_pitch = current_q(2) + current_q(3) + current_q(4);
+                        % Same convention as target_pitch: pitch_deg = -(q2+q3+q4)
+                        current_pitch = -(current_q(2) + current_q(3) + current_q(4));
 
                         error_pos = target_pos(:) - current_pos(:);
                         error_pitch = target_pitch - current_pitch;
@@ -484,7 +575,7 @@ classdef HardwareInterface < handle
                         Kp_pos = 2.0;
                         v_lin = Kp_pos * error_pos;
                         v_norm = norm(v_lin);
-                        vel_mag = max(dist_lin / max(time_sec, 0.1), 10.0);
+                        vel_mag = max(dist_lin / max(duration, 0.1), 10.0);
                         if v_norm > vel_mag && v_norm > 1e-9
                             v_lin = v_lin * (vel_mag / v_norm);
                         end
@@ -493,15 +584,17 @@ classdef HardwareInterface < handle
                         w_pitch_rad = Kp_rot * deg2rad(error_pitch);
                         w_pitch_rad = max(min(w_pitch_rad, deg2rad(90)), deg2rad(-90));
 
+                        % Geometric J is mm/rad and rad/rad: J*q_dot_rad = [v_lin (mm/s); pitch_dot (rad/s)]
                         J = OpenManipulator.GetJacobian(current_q); % 6x4
-                        J_pitch_row = [0.0, 1.0, 1.0, 1.0];
+                        % pitch_deg = -(q2+q3+q4) => pitch_dot_rad = -(q2_dot+q3_dot+q4_dot)_rad
+                        J_pitch_row = [0.0, -1.0, -1.0, -1.0];
                         J_task = [J(1:3, :); J_pitch_row];
-                        v_task = [v_lin; w_pitch_rad];
+                        v_task = [v_lin; w_pitch_rad];  % mm/s, mm/s, mm/s, rad/s
 
                         lambda_val = 0.05;
                         try
                             J_dls = J_task' / (J_task * J_task' + (lambda_val^2) * eye(4));
-                            q_dot_rad = J_dls * v_task;
+                            q_dot_rad = J_dls * v_task;  % rad/s
                             q_dot_deg = rad2deg(q_dot_rad);
                             q_dot_deg = max(min(q_dot_deg, 120.0), -120.0);
                             new_q = current_q + q_dot_deg' * dt;
@@ -528,6 +621,21 @@ classdef HardwareInterface < handle
                         encoders(i) = obj.deg2enc(new_q(i));
                     end
                     obj.syncWritePositions(encoders);
+                    if debug_jitter && ~jac_final_phase && mod(round(t/dt), 5) == 0
+                        q_act = obj.readAngles();
+                        [T_act, ~] = OpenManipulator.FK(q_act);
+                        err_mm = norm(target_pos(:) - T_act(1:3, 4));
+                        fprintf('  [jitter dbg] t=%.2f cmd_q=[%.1f %.1f %.1f %.1f] actual_q=[%.1f %.1f %.1f %.1f] err_mm=%.1f\n', ...
+                            t, new_q, q_act, err_mm);
+                    end
+                    if log_verify_pose && ~jac_final_phase && (mod(round(t/dt), 2) == 0 || t <= dt*1.5)
+                        q_act = obj.readAngles();
+                        [T_act, ~] = OpenManipulator.FK(q_act);
+                        pos_act = T_act(1:3, 4);
+                        err_mm = norm(target_pos(:) - pos_act(:));
+                        fprintf('  [VERIFY mode3] t=%.2f cmd_q=[%.1f %.1f %.1f %.1f] actual_q=[%.1f %.1f %.1f %.1f] FK=[%.1f %.1f %.1f] err_mm=%.2f\n', ...
+                            t, new_q, q_act, pos_act(1), pos_act(2), pos_act(3), err_mm);
+                    end
                     pause(dt);
 
                     current_q = new_q;
@@ -585,6 +693,8 @@ classdef HardwareInterface < handle
 
         function waitForMotion(obj, timeout)
         %WAITFORMOTION Poll ADDR_MOVING until all motors stopped
+        % Short poll/confirm pauses (0.02s) to avoid long gap with no position
+        % commands at segment end, which caused visible jump into next segment.
             if nargin < 2
                 timeout = 10.0;
             end
@@ -602,8 +712,8 @@ classdef HardwareInterface < handle
                 end
 
                 if all_stopped
-                    % Double-check stability
-                    pause(0.1);
+                    % Brief double-check (was 0.1s — reduced to avoid segment-end hitch)
+                    pause(0.02);
                     still_stopped = true;
                     for id = obj.DXL_IDS
                         moving = read1ByteTxRx(obj.port_num, ...
@@ -617,7 +727,7 @@ classdef HardwareInterface < handle
                         return;
                     end
                 end
-                pause(0.05);
+                pause(0.02);
             end
             warning('Motion timeout after %.1f seconds.', timeout);
         end

@@ -8,58 +8,74 @@
 %   run('scripts/task2c_tool_through_gates.m')
 %
 % Set DRY_RUN = true to validate IK/FK for all waypoints without hardware.
+%
+% --- Jitter (Mode 2 / Mode 3) ---
+% If motion looks jittery: (1) Raise VELOCITY (e.g. 50 or 80) so servos track
+% the stream of targets; (2) In HardwareInterface.executePoseMove set
+% debug_jitter = true to log commanded vs actual joint angles and err_mm
+% (persistent large err_mm = lag; oscillating err_mm = overshoot).
 
 clear; clc;
 
 %% ======================== CONFIGURATION ========================
 
 % --- Hardware ---
-COM_PORT  = '/dev/tty.usbserial-FT9BTEKY';
+COM_PORT  = 'COM4';
 BAUDRATE  = 1000000;
-VELOCITY  = 10;           % Dynamixel profile velocity (~2.3 RPM, slowed down)
+VELOCITY  = 50;           % Dynamixel profile velocity. Higher = servos track Mode 2/3 targets better (reduces jitter). Try 40-80; 20 was too low.
 DRY_RUN   = false;        % true = IK/FK validation only, no hardware
 
 % --- Motion ---
-MOTION_MODE   = 2;        % 1=Joint, 2=Task Linear (best Z constancy), 3=Jacobian
-MOVE_TIME     = 4.0;      % Base time per segment (seconds, slowed down)
+% MOTION_MODE for fly legs (5,9) and gate_traverse (7): straight line in Cartesian
+% space so tool stays at SAFE_Z when flying, and goes straight through gates.
+% Other moves use Mode 1. 2=Task-space linear, 3=Jacobian.
+MOTION_MODE   = 3;
+MOVE_TIME     = 4.0;      % Max time per segment (s). Actual time scales with distance (~70 mm/s nominal) for straight-line.
 Z_FLOOR       = 20.0;     % EE Z-floor safety limit (mm)
 
 % --- Task Coordinates (mm) ---
 TOOL_PICK_XY  = [-50, -200];     % Tool pickup location (XY)
-GRASP_Z       = 50;              % Z to lower for grasping
-SAFE_Z        = 75;              % Travel height (above gate tops)
-GATE_Z        = 70;              % Z while passing through gates
+GRASP_Z       = 75;              % Z to grasp (matches previous approach height)
+SAFE_Z        = 105;             % Approach above tool (was 75; +30 for clearance)
+FLY_Z         = 110;              % Z when flying between locations (higher = clearer)
+GATE_Z        = 70;              % (unused) gate Z now varies by segment
+BRIDGE_Z_LOW  = 105;             % Pickup height; hold for first and last bridge segments
+BRIDGE_Z_HIGH = 130;             % +25 mm for central two bridges only
 
-% Gate waypoints — move through gates in order
+% Gate waypoints — bridge 1, bridge 2 to (225,0), then straight to (175,0), then to drop approach
 GATE_WAYPOINTS = [
     100, -175;    % Waypoint 1
-    100,  -75;    % Waypoint 2
-    225,   65;    % Waypoint 3 (Gate entry)
-    225,   35;    % Waypoint 4 (Gate exit)
-    175,    0;    % Waypoint 5
-    175,  100;    % Waypoint 6
+    100,  -75;    % Waypoint 2 (end bridge 1)
+    225,    0;    % Waypoint 3 (end bridge 2)
+    175,    0;    % Waypoint 4 — straight from (225,0)
+    175,  100;    % Waypoint 5
 ];
 
 DROP_XY  = [50, 100];     % Drop-off location (XY)
 DROP_Z   = 50;            % Z for releasing tool
 
 % --- End-Effector Orientation ---
-PITCH    = -85;            % Tilted tool (to reach further points like 225, 65)
+PITCH        = -80;            % Tilted tool (to reach far bridge); reduced from -85 to avoid bridge collision
+PITCH_BRIDGE2 = PITCH + 1;     % -79° on second bridge only (1° less tilt)
+PITCH_BRIDGE3 = PITCH - 1;     % -81° on third bridge (225,0)->(175,0), 1° closer to -90
 
 %% ======================== ADD SOURCE PATH ========================
 
 addpath(fullfile(fileparts(mfilename('fullpath')), '..', 'src'));
 
 %% ======================== BUILD WAYPOINT LIST ========================
-% Each row: [x, y, z, pitch, label_id]
-%   label_id: 1=approach, 2=lower_grasp, 3=grip, 4=lift, 5=xy_travel,
-%             6=lower_gate, 7=gate_traverse, 8=lift_after, 9=xy_drop,
-%             10=lower_drop, 11=release, 12=lift_final
+% Straight-line only through the gates (bridges); between gates we lift and
+% move normally (point-to-point). Fewer waypoints, faster, fewer segment jumps.
+%
+% label_id: 1=approach, 2=lower_grasp, 3=grip, 4=lift, 5=fly_to_gate1,
+%           6=lower_gate, 7=gate_traverse (straight-line only), 8=lift_after,
+%           9=fly_to_drop, 10=lower_drop, 11=release, 12=lift_final
 
 LABELS = {'approach_above_tool', 'lower_to_grasp', 'close_gripper', ...
-          'lift_to_safe_z', 'xy_to_gate_entry', 'lower_to_gate_z', ...
-          'gate_traverse', 'lift_after_gates', 'xy_to_drop', ...
-          'lower_to_drop', 'open_gripper', 'lift_and_home'};
+          'lift_to_safe_z', 'fly_to_gate1', 'lower_to_gate_z', ...
+          'gate_traverse', 'lift_after_gates', 'fly_to_drop', ...
+          'lower_to_drop', 'open_gripper', 'lift_and_home', ...
+          'lift_for_central_bridges', 'lower_for_final_bridges'};
 
 waypoints = [];
 phase_labels = [];
@@ -80,26 +96,33 @@ phase_labels(end+1) = 3;
 waypoints(end+1, :) = [TOOL_PICK_XY, SAFE_Z, PITCH];
 phase_labels(end+1) = 4;
 
-% 5. XY travel to first gate entry at SAFE_Z
+% 5. Fly to first gate at pickup height (no Z drop)
 waypoints(end+1, :) = [GATE_WAYPOINTS(1,:), SAFE_Z, PITCH];
 phase_labels(end+1) = 5;
 
-% 6. Lower to gate Z
-waypoints(end+1, :) = [GATE_WAYPOINTS(1,:), GATE_Z, PITCH];
-phase_labels(end+1) = 6;
-
-% 7. Traverse through all gate waypoints at GATE_Z
-for i = 2:size(GATE_WAYPOINTS, 1)
-    waypoints(end+1, :) = [GATE_WAYPOINTS(i,:), GATE_Z, PITCH]; %#ok<SAGROW>
-    phase_labels(end+1) = 7; %#ok<SAGROW>
-end
+% 6–7. Traverse gates: segment 1 single move; segment 2 (100,-75)->(225,0) kept with intermediates for pitch tuning
+% Segment 1: wp1 -> wp2 at BRIDGE_Z_LOW (one waypoint = one smooth straight line)
+waypoints(end+1, :) = [GATE_WAYPOINTS(2,:), BRIDGE_Z_LOW, PITCH];
+phase_labels(end+1) = 7;
+% Lift for central two bridges
+waypoints(end+1, :) = [GATE_WAYPOINTS(2,:), BRIDGE_Z_HIGH, PITCH];
+phase_labels(end+1) = 13;
+% Segment 2: wp2 -> wp3 at BRIDGE_Z_HIGH — UNCHANGED (appendManhattanXY + PITCH_BRIDGE2)
+[waypoints, phase_labels] = appendManhattanXY( ...
+    waypoints, phase_labels, GATE_WAYPOINTS(2,:), GATE_WAYPOINTS(3,:), BRIDGE_Z_HIGH, PITCH_BRIDGE2, 7);
+% Segment 3: wp3 -> wp4 straight (225,0) -> (175,0) at BRIDGE_Z_HIGH (one waypoint, third bridge pitch)
+waypoints(end+1, :) = [GATE_WAYPOINTS(4,:), BRIDGE_Z_HIGH, PITCH_BRIDGE3];
+phase_labels(end+1) = 7;
+% Segment 4: wp4 -> wp5 at BRIDGE_Z_HIGH (one waypoint)
+waypoints(end+1, :) = [GATE_WAYPOINTS(5,:), BRIDGE_Z_HIGH, PITCH];
+phase_labels(end+1) = 7;
 
 % 8. Lift after gates
-waypoints(end+1, :) = [GATE_WAYPOINTS(end,:), SAFE_Z, PITCH];
+waypoints(end+1, :) = [GATE_WAYPOINTS(end,:), FLY_Z, PITCH];
 phase_labels(end+1) = 8;
 
-% 9. XY travel to drop zone at SAFE_Z
-waypoints(end+1, :) = [DROP_XY, SAFE_Z, PITCH];
+% 9. Fly to above drop zone
+waypoints(end+1, :) = [DROP_XY, FLY_Z, PITCH];
 phase_labels(end+1) = 9;
 
 % 10. Lower to drop Z
@@ -111,7 +134,7 @@ waypoints(end+1, :) = [DROP_XY, DROP_Z, PITCH];
 phase_labels(end+1) = 11;
 
 % 12. Lift and home
-waypoints(end+1, :) = [DROP_XY, SAFE_Z, PITCH];
+waypoints(end+1, :) = [DROP_XY, FLY_Z, PITCH];
 phase_labels(end+1) = 12;
 
 num_waypoints = size(waypoints, 1);
@@ -235,13 +258,14 @@ for i = 1:num_waypoints
     end
 
     % --- Arm movement ---
-    % Select motion mode: use task-linear (mode 2) for gate segments
-    % and XY travel for best Z constancy; joint (mode 1) for lifts/lowers
-    if ismember(lid, [5, 7, 9])
-        mode = MOTION_MODE;  % XY segments: task-space linear
+    % Cartesian (Mode 2/3) for fly legs (5,9) and gate_traverse (7). Rest use Mode 1.
+    % Fly sections (5,9) use higher speed limits so flying is obviously faster than bridge.
+    if ismember(phase_labels(i), [5, 7, 9])
+        mode = MOTION_MODE;
     else
-        mode = 1;            % Vertical movements: joint interpolation
+        mode = 1;
     end
+    is_fly = ismember(phase_labels(i), [5, 9]);  % Fly-to-gate and fly-to-drop: no speed cap
 
     try
         % Compute IK for logging
@@ -249,7 +273,7 @@ for i = 1:num_waypoints
         fprintf('        IK: [%.1f, %.1f, %.1f, %.1f]°\n', q_target);
 
         % Move
-        hw.moveToPose(x, y, z, p, MOVE_TIME, mode, Z_FLOOR);
+        hw.moveToPose(x, y, z, p, MOVE_TIME, mode, Z_FLOOR, is_fly);
 
         % Read actual position
         q_actual = hw.readAngles();
@@ -301,4 +325,44 @@ function safeShutdown(hw)
     catch
     end
     fprintf('>>> Safe shutdown complete.\n');
+end
+
+function [waypoints, phase_labels] = appendManhattanXY(waypoints, phase_labels, start_xy, end_xy, z, pitch, label_id)
+    % appendManhattanXY
+    % Move in Manhattan style: X-only then Y-only, while Z and pitch stay fixed.
+    % Adds intermediate waypoints every MAX_SEG_MM to keep segments short and smooth.
+    MAX_SEG_MM = 60;  % Max mm per segment for smooth gate traversal
+
+    sx = start_xy(1); sy = start_xy(2);
+    ex = end_xy(1);   ey = end_xy(2);
+
+    % X-only move (Y constant) — add intermediates if segment is long
+    if abs(ex - sx) > 1e-9
+        dx = ex - sx;
+        n_x = max(1, ceil(abs(dx) / MAX_SEG_MM));
+        for k = 1:n_x
+            t = k / n_x;
+            xk = sx + dx * t;
+            waypoints(end+1, :) = [xk, sy, z, pitch]; %#ok<AGROW>
+            phase_labels(end+1) = label_id; %#ok<AGROW>
+        end
+    end
+
+    % Y-only move (X constant) — add intermediates if segment is long
+    if abs(ey - sy) > 1e-9
+        dy = ey - sy;
+        n_y = max(1, ceil(abs(dy) / MAX_SEG_MM));
+        for k = 1:n_y
+            t = k / n_y;
+            yk = sy + dy * t;
+            waypoints(end+1, :) = [ex, yk, z, pitch]; %#ok<AGROW>
+            phase_labels(end+1) = label_id; %#ok<AGROW>
+        end
+    end
+
+    % No XY movement (still record endpoint marker)
+    if abs(ex - sx) <= 1e-9 && abs(ey - sy) <= 1e-9
+        waypoints(end+1, :) = [ex, ey, z, pitch]; %#ok<AGROW>
+        phase_labels(end+1) = label_id; %#ok<AGROW>
+    end
 end
