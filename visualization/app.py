@@ -19,6 +19,7 @@ from visualization.kinematics.FK import FK
 from visualization.kinematics.JointLimits import clamp_joints, validate_joints, get_limits, JOINT_NAMES
 from visualization.kinematics.Jacobian import get_jacobian
 from visualization.kinematics.GripperSim import GripperSim
+from visualization.task2b_cube_stacking import generate_pick_rotate_sequence, CUBE_SIZE_MM
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -297,6 +298,113 @@ class MainWindow(QMainWindow):
         grip_layout.addWidget(self.grip_status)
 
         control_layout.addWidget(grip_group)
+
+        # ── Task 2b Control Group ──────────────────────────────────
+        t2b_group = QGroupBox("Task 2b: Pick & Rotate Cube")
+        t2b_layout = QVBoxLayout()
+        t2b_group.setLayout(t2b_layout)
+
+        # Cube pick/place position inputs
+        t2b_pos_layout = QGridLayout()
+        self.t2b_inputs = {}
+        t2b_labels_defaults = [
+            ("Pick X:", "pick_x", 200.0),
+            ("Pick Y:", "pick_y",   0.0),
+            ("Place X:", "place_x", 250.0),
+            ("Place Y:", "place_y",  50.0),
+        ]
+        for row, (label_text, key, default) in enumerate(t2b_labels_defaults):
+            lbl = QLabel(label_text)
+            spin = QDoubleSpinBox()
+            spin.setRange(-500, 500)
+            spin.setValue(default)
+            self.t2b_inputs[key] = spin
+            t2b_pos_layout.addWidget(lbl, row, 0)
+            t2b_pos_layout.addWidget(spin, row, 1)
+        t2b_layout.addLayout(t2b_pos_layout)
+
+        # Rotation options: no rotate, +90°, -90°
+        self.t2b_rot_mode_group = QButtonGroup(self)
+        rot_layout = QHBoxLayout()
+        self.t2b_rot_none = QRadioButton("No rotate")
+        self.t2b_rot_pos = QRadioButton("+90°")
+        self.t2b_rot_neg = QRadioButton("−90°")
+        self.t2b_rot_pos.setChecked(True)
+        self.t2b_rot_mode_group.addButton(self.t2b_rot_none, 0)
+        self.t2b_rot_mode_group.addButton(self.t2b_rot_pos, 1)
+        self.t2b_rot_mode_group.addButton(self.t2b_rot_neg, -1)
+        rot_layout.addWidget(self.t2b_rot_none)
+        rot_layout.addWidget(self.t2b_rot_pos)
+        rot_layout.addWidget(self.t2b_rot_neg)
+        t2b_layout.addLayout(rot_layout)
+
+        # Load / Play / Pause / Reset buttons
+        t2b_btn_row1 = QHBoxLayout()
+        self.btn_t2b_load = QPushButton("Load Task 2b")
+        self.btn_t2b_load.clicked.connect(self.t2b_load)
+        self.btn_t2b_load.setStyleSheet("background-color: #4488CC; color: white; font-weight: bold;")
+        t2b_btn_row1.addWidget(self.btn_t2b_load)
+        t2b_layout.addLayout(t2b_btn_row1)
+
+        t2b_btn_row2 = QHBoxLayout()
+        self.btn_t2b_play = QPushButton("▶ Play")
+        self.btn_t2b_play.clicked.connect(self.t2b_play)
+        self.btn_t2b_play.setEnabled(False)
+        self.btn_t2b_pause = QPushButton("⏸ Pause")
+        self.btn_t2b_pause.clicked.connect(self.t2b_pause)
+        self.btn_t2b_pause.setEnabled(False)
+        self.btn_t2b_reset = QPushButton("⏹ Reset")
+        self.btn_t2b_reset.clicked.connect(self.t2b_reset)
+        self.btn_t2b_reset.setEnabled(False)
+        t2b_btn_row2.addWidget(self.btn_t2b_play)
+        t2b_btn_row2.addWidget(self.btn_t2b_pause)
+        t2b_btn_row2.addWidget(self.btn_t2b_reset)
+        t2b_layout.addLayout(t2b_btn_row2)
+
+        # Speed slider
+        t2b_speed_layout = QHBoxLayout()
+        t2b_speed_layout.addWidget(QLabel("Speed:"))
+        self.t2b_speed_slider = QSlider(Qt.Horizontal)
+        self.t2b_speed_slider.setRange(1, 20)   # 0.5x to 10x  (value / 2)
+        self.t2b_speed_slider.setValue(2)        # 1x
+        self.t2b_speed_label = QLabel("1.0×")
+        self.t2b_speed_slider.valueChanged.connect(
+            lambda v: self.t2b_speed_label.setText(f"{v/2:.1f}×"))
+        t2b_speed_layout.addWidget(self.t2b_speed_slider)
+        t2b_speed_layout.addWidget(self.t2b_speed_label)
+        t2b_layout.addLayout(t2b_speed_layout)
+
+        # Step scrubber
+        t2b_scrub_layout = QHBoxLayout()
+        t2b_scrub_layout.addWidget(QLabel("Step:"))
+        self.t2b_scrubber = QSlider(Qt.Horizontal)
+        self.t2b_scrubber.setRange(0, 0)
+        self.t2b_scrubber.setEnabled(False)
+        self.t2b_scrubber.valueChanged.connect(self.t2b_scrub_to)
+        t2b_scrub_layout.addWidget(self.t2b_scrubber)
+        self.t2b_step_label = QLabel("0 / 0")
+        t2b_scrub_layout.addWidget(self.t2b_step_label)
+        t2b_layout.addLayout(t2b_scrub_layout)
+
+        # Status
+        self.t2b_status = QLabel("Not loaded")
+        self.t2b_status.setStyleSheet("font-weight: bold;")
+        t2b_layout.addWidget(self.t2b_status)
+
+        control_layout.addWidget(t2b_group)
+
+        # ── Task 2b internal state ─────────────────────────────────
+        self.t2b_waypoints = []
+        self.t2b_step_idx = 0
+        self.t2b_playing = False
+        self.t2b_pick_x = 200.0
+        self.t2b_pick_y = 0.0
+        self.t2b_place_x = 250.0
+        self.t2b_place_y = 50.0
+        self.t2b_cube_z = 45.0
+        self.t2b_first_grip_idx = None
+        self.t2b_timer = QTimer()
+        self.t2b_timer.timeout.connect(self.t2b_tick)
 
         # Back to Home Button
         self.btn_home = QPushButton("BACK TO HOME (BYPASS SAFETY)")
@@ -697,8 +805,170 @@ class MainWindow(QMainWindow):
         # Update 3D jaws
         self.renderer.update_gripper(state['jaw_width_mm'])
 
+    # ── Task 2b Methods ────────────────────────────────────────────
+
+    def t2b_load(self):
+        """Generate waypoints from current inputs and place the cube in the scene."""
+        self.t2b_pick_x = self.t2b_inputs['pick_x'].value()
+        self.t2b_pick_y = self.t2b_inputs['pick_y'].value()
+        self.t2b_place_x = self.t2b_inputs['place_x'].value()
+        self.t2b_place_y = self.t2b_inputs['place_y'].value()
+
+        rotate_mode = self.t2b_rot_mode_group.checkedId()
+
+        self.t2b_waypoints = generate_pick_rotate_sequence(
+            pick_x=self.t2b_pick_x,
+            pick_y=self.t2b_pick_y,
+            place_x=self.t2b_place_x,
+            place_y=self.t2b_place_y,
+            cube_z_surface=self.t2b_cube_z,
+            cube_size=CUBE_SIZE_MM,
+            rotate_mode=rotate_mode,
+        )
+        self.t2b_step_idx = 0
+
+        # Pre-compute first index where cube is gripped
+        self.t2b_first_grip_idx = None
+        for i, wp in enumerate(self.t2b_waypoints):
+            if wp.gripper_pct >= 50:
+                self.t2b_first_grip_idx = i
+                break
+
+        # Remove old cubes, add fresh one
+        self.renderer.remove_cubes()
+        cube_centre_z = self.t2b_cube_z + CUBE_SIZE_MM / 2.0
+        self.renderer.add_cube(
+            'cube1',
+            (self.t2b_pick_x, self.t2b_pick_y, cube_centre_z),
+            size=CUBE_SIZE_MM,
+        )
+
+        # Update scrubber
+        self.t2b_scrubber.setRange(0, len(self.t2b_waypoints) - 1)
+        self.t2b_scrubber.setValue(0)
+        self.t2b_scrubber.setEnabled(True)
+
+        # Enable buttons
+        self.btn_t2b_play.setEnabled(True)
+        self.btn_t2b_pause.setEnabled(True)
+        self.btn_t2b_reset.setEnabled(True)
+
+        self.t2b_status.setText(f"Loaded {len(self.t2b_waypoints)} steps")
+
+        # Show first waypoint
+        self._t2b_apply_step(0)
+
+    def t2b_play(self):
+        """Start / resume playback."""
+        if not self.t2b_waypoints:
+            return
+        self.t2b_playing = True
+        speed = self.t2b_speed_slider.value() / 2.0
+        interval_ms = max(10, int(80 / speed))  # base ~80 ms per step
+        self.t2b_timer.start(interval_ms)
+        self.t2b_status.setText("Playing…")
+
+    def t2b_pause(self):
+        self.t2b_playing = False
+        self.t2b_timer.stop()
+        self.t2b_status.setText("Paused")
+
+    def t2b_reset(self):
+        self.t2b_pause()
+        self.t2b_step_idx = 0
+        self._t2b_apply_step(0)
+        self.t2b_scrubber.setValue(0)
+        self.t2b_status.setText("Reset")
+
+    def t2b_scrub_to(self, value):
+        """Jump to a specific step (from the scrubber slider)."""
+        if not self.t2b_waypoints:
+            return
+        self.t2b_step_idx = value
+        self._t2b_apply_step(value)
+
+    def t2b_tick(self):
+        """Called by the timer each frame during playback."""
+        if not self.t2b_playing:
+            return
+        if self.t2b_step_idx >= len(self.t2b_waypoints) - 1:
+            self.t2b_pause()
+            self.t2b_status.setText("Done!")
+            return
+        self.t2b_step_idx += 1
+        # Update scrubber without re-triggering scrub_to
+        self.t2b_scrubber.blockSignals(True)
+        self.t2b_scrubber.setValue(self.t2b_step_idx)
+        self.t2b_scrubber.blockSignals(False)
+        self._t2b_apply_step(self.t2b_step_idx)
+
+    def _t2b_apply_step(self, idx):
+        """Apply a single waypoint: move robot, update gripper, update cube."""
+        if idx < 0 or idx >= len(self.t2b_waypoints):
+            return
+        wp = self.t2b_waypoints[idx]
+
+        # Update step label
+        self.t2b_step_label.setText(f"{idx} / {len(self.t2b_waypoints) - 1}")
+        self.t2b_status.setText(wp.label)
+
+        try:
+            q = IK(wp.x, wp.y, wp.z, wp.pitch)
+            T_ee, global_transforms = FK(q)
+            self.renderer.update_actors(global_transforms)
+
+            # Sync sliders
+            self.sliders['X'].blockSignals(True)
+            self.sliders['Y'].blockSignals(True)
+            self.sliders['Z'].blockSignals(True)
+            self.sliders['Pitch'].blockSignals(True)
+            self.sliders['X'].setValue(int(wp.x))
+            self.sliders['Y'].setValue(int(wp.y))
+            self.sliders['Z'].setValue(int(wp.z))
+            self.sliders['Pitch'].setValue(int(wp.pitch))
+            self.sliders['X'].blockSignals(False)
+            self.sliders['Y'].blockSignals(False)
+            self.sliders['Z'].blockSignals(False)
+            self.sliders['Pitch'].blockSignals(False)
+
+            self.labels['X'].setText(f"X: {wp.x:.1f}")
+            self.labels['Y'].setText(f"Y: {wp.y:.1f}")
+            self.labels['Z'].setText(f"Z: {wp.z:.1f}")
+            self.labels['Pitch'].setText(f"Pitch: {wp.pitch:.1f}")
+
+            # Gripper
+            self.gripper.set_position_pct(wp.gripper_pct)
+            self._sync_gripper_ui()
+
+            # ── Cube position ──────────────────────────────────────
+            is_gripped = wp.gripper_pct >= 50
+            if is_gripped:
+                # Cube follows the end-effector tip.
+                # T_ee is the full EE transform; cube centre is at EE tip.
+                T_cube = np.array(T_ee)
+                # The EE X-axis points along the tool — nudge back so the
+                # cube centre aligns with the gripper jaw centre.
+                # (no offset needed; EE position IS the tip)
+                self.renderer.update_cube_transform('cube1', T_cube)
+            else:
+                # Cube sits at its resting position: at pick before first grip,
+                # at place after.
+                T_rest = np.eye(4)
+                if self.t2b_first_grip_idx is not None and idx > self.t2b_first_grip_idx:
+                    T_rest[0, 3] = self.t2b_place_x
+                    T_rest[1, 3] = self.t2b_place_y
+                else:
+                    T_rest[0, 3] = self.t2b_pick_x
+                    T_rest[1, 3] = self.t2b_pick_y
+                T_rest[2, 3] = self.t2b_cube_z + CUBE_SIZE_MM / 2.0
+                self.renderer.update_cube_transform('cube1', T_rest)
+
+        except Exception as e:
+            print(f"Task2b step error: {e}")
+
     def closeEvent(self, event):
         print("Closing Application...")
+        self.t2b_timer.stop()
         event.accept()
 
 if __name__ == '__main__':

@@ -58,7 +58,12 @@ class RobotRenderer:
         # Store current jaw state
         self._current_jaw_width_mm = 40.0  # start fully open
         self._ee_transform = np.eye(4)     # Frame 4 transform cache
-            
+
+        # ── Scene objects (cubes, holders) ─────────────────────────
+        self._cube_actors = {}      # id -> actor
+        self._cube_meshes = {}      # id -> mesh
+        self._holder_actors = []
+
         # Axes
         self.add_axes()
         self.add_workspace()
@@ -137,5 +142,85 @@ class RobotRenderer:
         T_bot = T4.copy()
         T_bot[:3, 3] -= T4[:3, 2] * half_gap
         self._jaw_right_actor.user_matrix = T_bot
+
+    # ── Scene-object methods (cubes, holders) ──────────────────────
+
+    def add_cube(self, cube_id, position, size=25.0,
+                 face_colors=None):
+        """
+        Add a coloured cube to the scene.
+
+        Parameters
+        ----------
+        cube_id : str
+            Unique identifier.
+        position : (x, y, z)
+            Centre of the cube (mm, user frame).
+        size : float
+            Side length in mm.
+        face_colors : dict | None
+            Mapping of face name to colour, e.g.
+            {'+x': 'red', '-x': 'white', ...}.
+            Defaults to red front (+x), white elsewhere.
+        """
+        hs = size / 2.0
+        mesh = pv.Box(bounds=(-hs, hs, -hs, hs, -hs, hs))
+
+        # Colour each face via cell scalars
+        # pv.Box produces 6 faces (cells): +x, -x, +y, -y, +z, -z
+        if face_colors is None:
+            face_colors = {
+                '+x': 'red',    '-x': 'white',
+                '+y': 'white',  '-y': 'white',
+                '+z': 'white',  '-z': 'white',
+            }
+
+        # Map colour names to RGB 0-255
+        COLOUR_MAP = {
+            'red':    [220,  30,  30],
+            'white':  [240, 240, 240],
+            'blue':   [ 30,  30, 220],
+            'green':  [ 30, 180,  30],
+            'yellow': [240, 220,  30],
+            'orange': [240, 140,  30],
+        }
+        face_order = ['+x', '-x', '+y', '-y', '+z', '-z']
+        colors_rgb = np.array(
+            [COLOUR_MAP.get(face_colors.get(f, 'white'), [240, 240, 240])
+             for f in face_order],
+            dtype=np.uint8,
+        )
+        mesh.cell_data['RGB'] = colors_rgb
+
+        # Position via user_matrix
+        T = np.eye(4)
+        T[0, 3], T[1, 3], T[2, 3] = position
+        actor = self.plotter.add_mesh(mesh, scalars='RGB', rgb=True,
+                                       show_edges=True, edge_color='black',
+                                       line_width=1)
+        actor.user_matrix = T
+
+        self._cube_actors[cube_id] = actor
+        self._cube_meshes[cube_id] = mesh
+
+    def update_cube_transform(self, cube_id, transform_4x4):
+        """Move / rotate a cube via a 4×4 homogeneous transform."""
+        if cube_id in self._cube_actors:
+            self._cube_actors[cube_id].user_matrix = np.array(transform_4x4)
+
+    def remove_cubes(self):
+        """Remove all cube actors from the scene."""
+        for cid in list(self._cube_actors):
+            self.plotter.remove_actor(self._cube_actors[cid])
+        self._cube_actors.clear()
+        self._cube_meshes.clear()
+
+    def add_holder(self, position, radius=18, height=5):
+        """Add a simple platform cylinder as a cube holder."""
+        mesh = pv.Cylinder(radius=radius, height=height,
+                           center=position, direction=(0, 0, 1))
+        actor = self.plotter.add_mesh(mesh, color='dimgrey', show_edges=False)
+        self._holder_actors.append(actor)
+
 
 
