@@ -26,16 +26,16 @@ Z_FLOOR       = 20.0;     % EE Z-floor safety limit (mm)
 
 % --- Task Coordinates (mm) ---
 TOOL_PICK_XY  = [-50, -200];     % Tool pickup location (XY)
-GRASP_Z       = 50;              % Z to lower for grasping
-SAFE_Z        = 75;              % Travel height (above gate tops)
+GRASP_Z       = 70;              % Z to lower for grasping
+SAFE_Z        = 85;              % Travel height (above gate tops)
 GATE_Z        = 70;              % Z while passing through gates
 
 % Gate waypoints — move through gates in order
 GATE_WAYPOINTS = [
     100, -175;    % Waypoint 1
     100,  -75;    % Waypoint 2
-    225,   65;    % Waypoint 3 (Gate entry)
-    225,   35;    % Waypoint 4 (Gate exit)
+    225,  -65;    % Waypoint 3 (Gate entry)
+    225,  -35;    % Waypoint 4 (Gate exit)
     175,    0;    % Waypoint 5
     175,  100;    % Waypoint 6
 ];
@@ -44,7 +44,7 @@ DROP_XY  = [50, 100];     % Drop-off location (XY)
 DROP_Z   = 50;            % Z for releasing tool
 
 % --- End-Effector Orientation ---
-PITCH    = -85;            % Tilted tool (to reach further points like 225, 65)
+PITCH    = -85;            % Tilted tool (to reach further points like 225, -65)
 
 %% ======================== ADD SOURCE PATH ========================
 

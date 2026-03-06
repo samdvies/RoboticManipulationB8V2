@@ -37,16 +37,16 @@ from visualization.kinematics.JointLimits import clamp_joints, validate_joints
 #   SAFE_Z is kept at 80mm so the tool stays vertical throughout.
 
 TOOL_PICK_XY   = (-50.0, -200.0)   # Tool pickup location (XY)
-TOOL_GRASP_Z   = 50.0              # Z to lower to for grasping
-SAFE_Z         = 75.0              # Travel height (just above gate Z, keeps pitch=-90 feasible)
+TOOL_GRASP_Z   = 70.0              # Z to lower to for grasping
+SAFE_Z         = 85.0              # Travel height (above gate tops)
 GATE_Z         = 70.0              # Z while passing through gates
 
 # Gate waypoints — move through gates in order
 GATE_WAYPOINTS_XY = [
     (100.0, -175.0),   # Waypoint 1
     (100.0,  -75.0),   # Waypoint 2
-    (225.0,   65.0),   # Waypoint 3 (Gate entry)
-    (225.0,   35.0),   # Waypoint 4 (Gate exit)
+    (225.0,  -65.0),   # Waypoint 3 (Gate entry)
+    (225.0,  -35.0),   # Waypoint 4 (Gate exit)
     (175.0,    0.0),   # Waypoint 5
     (175.0,  100.0),   # Waypoint 6
 ]
