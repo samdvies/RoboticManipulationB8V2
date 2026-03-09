@@ -211,19 +211,26 @@ classdef HardwareInterface < handle
             obj.waitForMotion();
         end
 
-        function moveToPose(obj, x, y, z, pitch, time_sec, mode, z_floor_mm, is_fly)
+        function moveToPose(obj, x, y, z, pitch, time_sec, mode, z_floor_mm, ctx_or_fly)
         %MOVETOPOSE High-level move command with selectable motion mode
         %   moveToPose(x, y, z, pitch)
         %   moveToPose(x, y, z, pitch, time_sec)
         %   moveToPose(x, y, z, pitch, time_sec, mode, z_floor_mm)
-        %   moveToPose(..., z_floor_mm, is_fly)  — is_fly true = higher speed (fly sections)
+        %   moveToPose(..., z_floor_mm, ctx_or_fly)
         %
         %   mode: 1=Joint, 2=Task-space linear, 3=Jacobian
-        %   is_fly: if true, use higher Cartesian speed limits so fly is obviously faster than bridge
+        %   ctx_or_fly: struct with .preplanned_route, .zones, etc. = bridge_ctx (skip reroute, optional dynamic pitch);
+        %               logical = is_fly (higher Cartesian speed for fly sections)
             if nargin < 6 || isempty(time_sec), time_sec = 2.0; end
             if nargin < 7 || isempty(mode), mode = 1; end
             if nargin < 8 || isempty(z_floor_mm), z_floor_mm = 20.0; end
-            if nargin < 9 || isempty(is_fly), is_fly = false; end
+            if nargin < 9 || isempty(ctx_or_fly)
+                ctx_or_fly = false;
+            end
+            preplanned_route = false;
+            if isstruct(ctx_or_fly) && isfield(ctx_or_fly, 'preplanned_route')
+                preplanned_route = logical(ctx_or_fly.preplanned_route);
+            end
             
             % 1. Get Current Pose
             q_current = obj.readAngles();
@@ -268,8 +275,12 @@ classdef HardwareInterface < handle
             end
             
             % 4. Execute
+            if preplanned_route
+                obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm, ctx_or_fly);
+                return;
+            end
             if is_safe
-                obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm, is_fly);
+                obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm, ctx_or_fly);
             else
                 fprintf('  [AUTO-SAFETY] Direct path unsafe. Rerouting via Safe Z...\n');
                 safe_z = max(start_pos(3), z) + 40;
@@ -278,9 +289,9 @@ classdef HardwareInterface < handle
                     safe_z = max(safe_z, 100);
                 end
                 q_via1 = OpenManipulator.IK(start_pos(1), start_pos(2), safe_z, pitch);
-                obj.executePoseMove(q_via1, [start_pos(1), start_pos(2), safe_z], pitch, time_sec, mode, z_floor_mm, is_fly);
+                obj.executePoseMove(q_via1, [start_pos(1), start_pos(2), safe_z], pitch, time_sec, mode, z_floor_mm, ctx_or_fly);
                 q_via2 = OpenManipulator.IK(x, y, safe_z, pitch);
-                obj.executePoseMove(q_via2, [x, y, safe_z], pitch, time_sec, mode, z_floor_mm, is_fly);
+                obj.executePoseMove(q_via2, [x, y, safe_z], pitch, time_sec, mode, z_floor_mm, ctx_or_fly);
                 obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm, false);
             end
         end
@@ -370,13 +381,22 @@ classdef HardwareInterface < handle
             obj.verifyPose(q_target);
         end
 
-        function executePoseMove(obj, q_target, target_pos, target_pitch, time_sec, mode, z_floor_mm, is_fly)
+        function executePoseMove(obj, q_target, target_pos, target_pitch, time_sec, mode, z_floor_mm, ctx_or_fly)
         %EXECUTEPOSEMOVE Internal helper to execute a single pose move without rerouting
-        %   is_fly: if true, use higher Cartesian speed so fly sections are obviously faster than bridge.
+        %   ctx_or_fly: struct (bridge_ctx with .zones, .final_target_pose, .dynamic_pitch) or logical (is_fly).
 
             if nargin < 6 || isempty(mode), mode = 1; end
             if nargin < 7 || isempty(z_floor_mm), z_floor_mm = 20.0; end
-            if nargin < 8 || isempty(is_fly), is_fly = false; end
+            if nargin < 8 || isempty(ctx_or_fly)
+                ctx_or_fly = false;
+            end
+            bridge_ctx = [];
+            is_fly = false;
+            if isstruct(ctx_or_fly)
+                bridge_ctx = ctx_or_fly;
+            else
+                is_fly = logical(ctx_or_fly);
+            end
 
             debug_jitter = false;  % Set true to log step, t, cmd vs actual (diagnose lag vs oscillation)
             log_verify_pose = true; % Log readAngles+FK (VERIFY START, during segment, VERIFY END). Segment-end jump is from waitForMotion() gap + pause(0.1), not from verify log.
@@ -439,6 +459,19 @@ classdef HardwareInterface < handle
             end
 
             if mode == 2
+                % Bridge context: optional dynamic pitch along path (master bridge_pick)
+                last_solved_pitch = start_pitch;
+                final_target_pose = [target_pos(:)' target_pitch];
+                if isstruct(bridge_ctx) && isfield(bridge_ctx, 'final_target_pose')
+                    final_target_pose = double(bridge_ctx.final_target_pose(:)');
+                end
+                use_dynamic_pitch = false;
+                if isstruct(bridge_ctx) && isfield(bridge_ctx, 'zones') && ~isempty(bridge_ctx.zones)
+                    use_dynamic_pitch = true;
+                    if isfield(bridge_ctx, 'dynamic_pitch')
+                        use_dynamic_pitch = logical(bridge_ctx.dynamic_pitch);
+                    end
+                end
                 % Task-space linear: interpolate pose, IK each step. Use commanded
                 % pose Z for floor check (trajectory we commit to), not FK(q), so
                 % small IK/clamp errors do not trigger false safety aborts.
@@ -446,6 +479,37 @@ classdef HardwareInterface < handle
                     s = step / num_steps;
                     pose = (1 - s) * start_pos(:) + s * target_pos(:);
                     pitch = (1 - s) * start_pitch + s * target_pitch;
+                    if use_dynamic_pitch
+                        dist_to_final = norm(pose(:)' - final_target_pose(1:3));
+                        d_far = 160.0;
+                        d_near = 25.0;
+                        u = (d_far - dist_to_final) / max(1e-6, (d_far - d_near));
+                        u = max(0.0, min(1.0, u));
+                        proximity = u * u * (3.0 - 2.0 * u);
+                        dynamic_target_weight = 25.0 + 220.0 * proximity;
+                        dynamic_max_pitch_rate = 1.8 - 0.9 * proximity;
+                        desired_pitch = (1.0 - proximity) * last_solved_pitch + proximity * target_pitch;
+                        solve_opts = struct();
+                        solve_opts.preferred_pitch = desired_pitch;
+                        solve_opts.prev_pitch = last_solved_pitch;
+                        solve_opts.max_pitch_rate = dynamic_max_pitch_rate;
+                        solve_opts.pitch_range = [-90.0, 45.0];
+                        solve_opts.terminal_target_pitch = target_pitch;
+                        solve_opts.terminal_target_weight = dynamic_target_weight;
+                        solve_opts.enforce_terminal_target_if_feasible = false;
+                        solve_opts.bridge_proximity_weight = 55.0;
+                        solve_opts.bridge_proximity_decay_mm = 12.0;
+                        solve_opts.bridge_x_proximity_weight = 95.0;
+                        solve_opts.bridge_x_proximity_decay_mm = 9.0;
+                        p_opt = OpenManipulator.BridgeAvoidance.SolveOptimalPitch( ...
+                            pose(1), pose(2), pose(3), bridge_ctx.zones, solve_opts);
+                        if ~isempty(p_opt) && isfinite(p_opt)
+                            pitch = p_opt;
+                            last_solved_pitch = p_opt;
+                        else
+                            pitch = last_solved_pitch;
+                        end
+                    end
 
                     % Safety: abort only if commanded trajectory goes below floor
                     if pose(3) < z_floor_mm
