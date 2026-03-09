@@ -417,6 +417,7 @@ function waypoints = collectWaypoints(plan, cfg)
                 ax = tx + ox; ay = ty + oy;
                 if step.is_rotated, pp = 0; else, pp = -90; end
                 waypoints(end+1,:) = [ax, ay, place_approach_z, pp]; %#ok<AGROW>
+                waypoints(end+1,:) = [ax, ay, pz + cfg.PLACE_VERTICAL_OFFSET_MM, pp]; %#ok<AGROW>  % directly above (straight-down approach)
                 waypoints(end+1,:) = [ax, ay, pz, pp]; %#ok<AGROW>
                 waypoints(end+1,:) = [ax, ay, place_approach_z, pp]; %#ok<AGROW>
         end

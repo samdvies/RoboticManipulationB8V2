@@ -35,6 +35,7 @@ cfg.HOME_POSE      = [134, 0, 240, -45];
 % =========================================================================
 cfg.PICK_OFFSET_X      = 5;        % +5 mm X offset on rotation picks
 cfg.PLACE_OFFSET_MAG   = sqrt(32); % place offset magnitude toward origin (mm)
+cfg.PLACE_VERTICAL_OFFSET_MM = 25; % mm above place surface for "directly above" waypoint (straight-down approach)
 cfg.MIN_ROTATE_RADIUS  = 200;      % min radius from base for safe pitch rotation (mm)
 
 % =========================================================================

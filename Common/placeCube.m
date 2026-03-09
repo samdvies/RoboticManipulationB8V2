@@ -43,6 +43,11 @@ fprintf('    [place] Above target (z=%.1f to clear bridge)...\n', approach_z);
 hw.moveToPose(act_x, act_y, approach_z, pitch, cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
 pause(0.3);
 
+above_place_z = place_z + cfg.PLACE_VERTICAL_OFFSET_MM;
+fprintf('    [place] Directly above target (z=%.1f, straight-down approach)...\n', above_place_z);
+hw.moveToPose(act_x, act_y, above_place_z, pitch, cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
+pause(0.3);
+
 fprintf('    [place] Lower to z=%.1f...\n', place_z);
 hw.moveToPose(act_x, act_y, place_z, pitch, cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
 pause(0.5);
