@@ -236,7 +236,8 @@ classdef HardwareInterface < handle
             q_current = obj.readAngles();
             [T_current, ~] = OpenManipulator.FK(q_current);
             start_pos = T_current(1:3, 4);
-            start_pitch = q_current(2) + q_current(3) + q_current(4);
+            % Keep pitch convention identical to IK/Python: pitch = -(q2 + q3 + q4)
+            start_pitch = -(q_current(2) + q_current(3) + q_current(4));
             
             % 2. Calculate Target Angles
             try
@@ -397,10 +398,17 @@ classdef HardwareInterface < handle
             else
                 is_fly = logical(ctx_or_fly);
             end
+            % When bridge_pick.m calls with preplanned_route=true, use master's timing so script matches master.
+            use_bridge_pick_timing = isstruct(ctx_or_fly) && isfield(ctx_or_fly, 'preplanned_route') && ctx_or_fly.preplanned_route;
 
             debug_jitter = false;  % Set true to log step, t, cmd vs actual (diagnose lag vs oscillation)
-            log_verify_pose = true; % Log readAngles+FK (VERIFY START, during segment, VERIFY END). Segment-end jump is from waitForMotion() gap + pause(0.1), not from verify log.
-            dt = 0.02;             % 50 Hz (was 0.05). Higher rate = smoother motion for Mode 2/3.
+            if use_bridge_pick_timing
+                log_verify_pose = false;  % Master has no VERIFY logging; avoid timing drift
+                dt = 0.05;
+            else
+                log_verify_pose = true; % Log readAngles+FK (VERIFY START, during segment, VERIFY END). Segment-end jump is from waitForMotion() gap + pause(0.1), not from verify log.
+                dt = 0.02;             % 50 Hz (was 0.05). Higher rate = smoother motion for Mode 2/3.
+            end
 
             % Current state (fresh for each segment)
             q_start = obj.readAngles();
@@ -409,30 +417,41 @@ classdef HardwareInterface < handle
             % IK uses pitch_deg = -(q2+q3+q4); keep same convention as target_pitch
             start_pitch = -(q_start(2) + q_start(3) + q_start(4));
 
-            % Duration / steps: scale with distance so Cartesian speed is ~constant.
-            % Otherwise short segments (e.g. gate waypoints every 60 mm) each get
-            % time_sec and straight-line phases feel much slower than single long moves.
             dist_lin = norm(target_pos(:) - start_pos(:));
             dist_rot = abs(target_pitch - start_pitch);
             ang_vel_deg_s = 45.0;
-            if is_fly
-                cartesian_speed_mm_s = 180.0;   % Fly: high speed so obviously "flying"
-                max_cartesian_speed_mm_s = 300.0;
+
+            if use_bridge_pick_timing
+                % Master duration rule: fixed time_sec for linear moves, same num_steps as master
+                if dist_lin > 1e-6
+                    dur_lin = max(time_sec, 0.1);
+                else
+                    dur_lin = 0.0;
+                end
+                dur_rot = dist_rot / ang_vel_deg_s;
+                duration = max([dur_lin, dur_rot, 0.1]);
+                num_steps = max(1, ceil(duration / dt));
             else
-                cartesian_speed_mm_s = 70.0;    % Bridge / normal straight-line
-                max_cartesian_speed_mm_s = 120.0;
+                % Combine: scale with distance so Cartesian speed is ~constant
+                if is_fly
+                    cartesian_speed_mm_s = 180.0;   % Fly: high speed so obviously "flying"
+                    max_cartesian_speed_mm_s = 300.0;
+                else
+                    cartesian_speed_mm_s = 70.0;    % Bridge / normal straight-line
+                    max_cartesian_speed_mm_s = 120.0;
+                end
+                if dist_lin > 1e-6
+                    dur_lin = dist_lin / cartesian_speed_mm_s;
+                    dur_lin = max(dur_lin, 0.15);   % minimum for stability
+                    dur_lin = min(dur_lin, time_sec); % cap so one segment doesn't exceed MOVE_TIME
+                    dur_lin = max(dur_lin, dist_lin / max_cartesian_speed_mm_s); % no segment faster than max
+                else
+                    dur_lin = 0.0;
+                end
+                dur_rot = dist_rot / ang_vel_deg_s;
+                duration = max([dur_lin, dur_rot, 0.15]);
+                num_steps = max(1, ceil(duration / dt));
             end
-            if dist_lin > 1e-6
-                dur_lin = dist_lin / cartesian_speed_mm_s;
-                dur_lin = max(dur_lin, 0.15);   % minimum for stability
-                dur_lin = min(dur_lin, time_sec); % cap so one segment doesn't exceed MOVE_TIME
-                dur_lin = max(dur_lin, dist_lin / max_cartesian_speed_mm_s); % no segment faster than max
-            else
-                dur_lin = 0.0;
-            end
-            dur_rot = dist_rot / ang_vel_deg_s;
-            duration = max([dur_lin, dur_rot, 0.15]);
-            num_steps = max(1, ceil(duration / dt));
 
             % Skip move when already at target (avoids 0.15s "hold" that can feel like a hiccup before next segment)
             if dist_lin < 1e-6 && dist_rot < 0.5
@@ -477,8 +496,15 @@ classdef HardwareInterface < handle
                 % small IK/clamp errors do not trigger false safety aborts.
                 for step = 1:num_steps
                     s = step / num_steps;
-                    pose = (1 - s) * start_pos(:) + s * target_pos(:);
-                    pitch = (1 - s) * start_pitch + s * target_pitch;
+                    % Master uses C1 smooth scaling for segment entry/exit; combine uses linear unless bridge_pick.
+                    if use_bridge_pick_timing
+                        s_smooth = s * s * (3.0 - 2.0 * s);
+                        pose = (1 - s_smooth) * start_pos(:) + s_smooth * target_pos(:);
+                        pitch = (1 - s_smooth) * start_pitch + s_smooth * target_pitch;
+                    else
+                        pose = (1 - s) * start_pos(:) + s * target_pos(:);
+                        pitch = (1 - s) * start_pitch + s * target_pitch;
+                    end
                     if use_dynamic_pitch
                         dist_to_final = norm(pose(:)' - final_target_pose(1:3));
                         d_far = 160.0;
@@ -546,28 +572,38 @@ classdef HardwareInterface < handle
                     pause(dt);
                 end
 
-                % Keep sending target for a short tail so stream doesn't stop abruptly (that caused visible jump before waitForMotion/VERIFY END)
-                encoders = zeros(1, 4);
-                for i = 1:4
-                    encoders(i) = obj.deg2enc(q_target(i));
+                if use_bridge_pick_timing
+                    % Master: no tail; wait then end-of-segment lock then verify
+                    obj.waitForMotion();
+                    try
+                        q_lock = OpenManipulator.IK(target_pos(1), target_pos(2), target_pos(3), target_pitch, 'elbow_down');
+                        obj.moveToAnglesInterpolated(q_lock, 1, z_floor_mm);
+                    catch
+                        % Keep best-effort endpoint if exact lock fails
+                    end
+                    obj.verifyPose(q_target);
+                else
+                    % Combine: tail sends then wait then optional VERIFY log then verify
+                    encoders = zeros(1, 4);
+                    for i = 1:4
+                        encoders(i) = obj.deg2enc(q_target(i));
+                    end
+                    for tail = 1:5
+                        obj.syncWritePositions(encoders);
+                        pause(dt);
+                    end
+                    obj.waitForMotion();
+                    if log_verify_pose
+                        q_act = obj.readAngles();
+                        [T_act, ~] = OpenManipulator.FK(q_act);
+                        pos_act = T_act(1:3, 4);
+                        err_mm = norm(target_pos(:) - pos_act(:));
+                        pitch_act = -(q_act(2) + q_act(3) + q_act(4));
+                        fprintf('  [VERIFY END mode=2] actual_q=[%.1f %.1f %.1f %.1f] actual_FK=[%.1f %.1f %.1f] pitch=%.1f | target=[%.1f %.1f %.1f] err_mm=%.2f\n', ...
+                            q_act, pos_act(1), pos_act(2), pos_act(3), pitch_act, target_pos(1), target_pos(2), target_pos(3), err_mm);
+                    end
+                    obj.verifyPose(q_target);
                 end
-                for tail = 1:5
-                    obj.syncWritePositions(encoders);
-                    pause(dt);
-                end
-
-                obj.waitForMotion();
-                % VERIFY END: readAngles + FK + fprintf only (no syncWrite).
-                if log_verify_pose
-                    q_act = obj.readAngles();
-                    [T_act, ~] = OpenManipulator.FK(q_act);
-                    pos_act = T_act(1:3, 4);
-                    err_mm = norm(target_pos(:) - pos_act(:));
-                    pitch_act = -(q_act(2) + q_act(3) + q_act(4));
-                    fprintf('  [VERIFY END mode=2] actual_q=[%.1f %.1f %.1f %.1f] actual_FK=[%.1f %.1f %.1f] pitch=%.1f | target=[%.1f %.1f %.1f] err_mm=%.2f\n', ...
-                        q_act, pos_act(1), pos_act(2), pos_act(3), pitch_act, target_pos(1), target_pos(2), target_pos(3), err_mm);
-                end
-                obj.verifyPose(q_target);
                 return;
             end
 
