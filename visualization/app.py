@@ -800,17 +800,17 @@ class MainWindow(QMainWindow):
             # Tighten grip once we're at Z=60 to hold the cup (approx 60mm wide)
             self.gripper_object(60.0)
 
-            # Phase 2: carry to the target cup at (200, 0),
+            # Phase 2: carry to the target cup at (125, 0),
             # pour while staying above the receiving cup height (~100mm),
             # then return the cup to its original position.
-            tgt_x, tgt_y = 200.0, 0.0
+            tgt_x, tgt_y = 125.0, 0.0
             carry_pour_and_return_poses = [
                 # Carry to second cup
                 np.array([src_x, src_y, 150.0, 0.0]),          # Lift cup up vertically
                 np.array([tgt_x, tgt_y, 150.0, 0.0]),          # Move over target cup at safe Z
                 np.array([tgt_x, tgt_y, 130.0, 0.0]),          # Lower over target cup (still above 100mm)
                 np.array([tgt_x, tgt_y, 130.0, -60.0]),        # Start pour
-                np.array([tgt_x, tgt_y, 130.0, -90.0]),        # Full pour
+                np.array([tgt_x, tgt_y, 130.0, -70.0]),        # Full pour
                 # Upright and lift back up
                 np.array([tgt_x, tgt_y, 150.0, 0.0]),          # Lift and return pitch to 0
                 # Return to original cup position
@@ -818,7 +818,7 @@ class MainWindow(QMainWindow):
                 np.array([src_x, src_y, 60.0, 0.0]),           # Back to original pick height
             ]
 
-            self._start_sequence(carry_pour_and_return_poses)
+            self._start_sequence(carry_pour_and_return_poses, on_complete=self.gripper_open)
 
         # First run the approach phase; when that finishes, `after_pick`
         # will be invoked to grip and continue with the pour.
@@ -897,8 +897,8 @@ class MainWindow(QMainWindow):
         ]
 
         def after_stir_pick():
-            # Now grip the stirrer to a 25mm jaw width
-            self.gripper_object(25.0)
+            # Now grip the stirrer to a 24mm jaw width
+            self.gripper_object(24.0)
 
             poses = []
 
@@ -931,7 +931,7 @@ class MainWindow(QMainWindow):
                 np.array([src_x,    src_y,    170.0, 0.0]),    # Original pick height
             ])
 
-            self._start_sequence(poses)
+            self._start_sequence(poses, on_complete=self.gripper_open)
 
         # First, just move to the stirrer with the gripper fully open. Once
         # that sequence finishes, we grip to 25mm and run the stirring path.

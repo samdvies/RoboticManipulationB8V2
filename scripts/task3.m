@@ -23,16 +23,16 @@ addpath(genpath('../src'));
 % =========================================================================
 PORT        = 'COM4';
 BAUD        = 1000000;
-VELOCITY    = 20;       % joint velocity (lower = slower, safer)
-MOVE_TIME   = 1.5;      % seconds per waypoint move
+VELOCITY    = 60;       % joint velocity (lower = slower, safer)
+MOVE_TIME   = 0.5;      % seconds per waypoint move
 Z_FLOOR     = 15;       % safety floor – arm won't go below this Z (mm)
 MOTION_MODE = 2;        % 1=Joint, 2=Task Linear, 3=Jacobian Hybrid
 
 HOME_POSE = [134, 0, 240, -45];  % [X Y Z Pitch]
 
 % General timing
-PAUSE_SHORT = 0.3;
-PAUSE_MED   = 0.5;
+PAUSE_SHORT = 0.1;
+PAUSE_MED   = 0.16;
 
 try
     % ── Connect ──────────────────────────────────────────────────────────
@@ -40,7 +40,7 @@ try
     hw.configure(VELOCITY);
     hw.enableTorque();
     hw.openGripper();
-    pause(0.5);
+    pause(0.16);
 
     % ── Go Home ─────────────────────────────────────────────────────────
     fprintf('[0] Moving to home...\n');
@@ -54,7 +54,7 @@ try
     fprintf('\n=== Demo 1: Cup Pour 1 ===\n');
 
     cup1_x = 75;   cup1_y = -175; cup1_z = 60;
-    cup2_x = 200;  cup2_y = 0;    cup2_z_pour = 130;
+    cup2_x = 125;  cup2_y = 0;    cup2_z_pour = 130;
     hover_z1 = 150;
 
     % Approach first cup with gripper open
@@ -66,10 +66,11 @@ try
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
-    % Grip first cup (approx 60 mm wide)
-    fprintf('[D1] Gripping first cup...\n');
-    hw.closeGripper();
-    pause(1.0);
+    % Grip first cup to approx 60 mm jaw width
+    fprintf('[D1] Gripping first cup (60mm)...\n');
+    pct_cup60 = (1 - 60/80) * 100;
+    hw.setGripperPosition(pct_cup60);
+    pause(0.33);
 
     % Carry to second cup and pour, then return first cup
     move_seq(hw, [
@@ -77,7 +78,7 @@ try
         cup2_x, cup2_y, hover_z1, 0;             % above second cup
         cup2_x, cup2_y, cup2_z_pour, 0;          % lower a bit
         cup2_x, cup2_y, cup2_z_pour, -60;        % start pour
-        cup2_x, cup2_y, cup2_z_pour, -90;        % full pour
+        cup2_x, cup2_y, cup2_z_pour, -70;        % full pour
         cup2_x, cup2_y, hover_z1, 0;             % upright and lift
         cup1_x, cup1_y, hover_z1, 0;             % back above first cup
         cup1_x, cup1_y, cup1_z,   0;             % back to original height
@@ -87,7 +88,7 @@ try
     % Optionally release first cup back on table
     fprintf('[D1] Releasing first cup...\n');
     hw.openGripper();
-    pause(0.8);
+    pause(0.26);
 
     % Lift back up before next demo
     move_seq(hw, [
@@ -115,9 +116,10 @@ try
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
-    fprintf('[D2] Gripping stirrer...\n');
-    hw.closeGripper();
-    pause(0.8);
+    fprintf('[D2] Gripping stirrer (24mm)...\n');
+    pct_stir24 = (1 - 24/80) * 100;
+    hw.setGripperPosition(pct_stir24);
+    pause(0.26);
 
     % Move up and across to stirring centre
     move_seq(hw, [
@@ -162,7 +164,7 @@ try
 
     fprintf('[D2] Releasing stirrer...\n');
     hw.openGripper();
-    pause(0.8);
+    pause(0.26);
 
     move_seq(hw, [
         stir_src_x, stir_src_y, hover_stir, 0;
@@ -180,7 +182,7 @@ try
     % "Mouth" arc poses (X, Y, Z, Pitch)
     mouth_start = [150, 150, 100,   0];
     mouth_mid   = [175, 175, 125, -45];
-    mouth_end   = [200, 200, 150, -90];
+    mouth_end   = [200, 200, 150, -70];
 
     % Approach and pick second cup
     hw.openGripper(); pause(PAUSE_SHORT);
@@ -193,7 +195,7 @@ try
 
     fprintf('[D3] Gripping second cup...\n');
     hw.closeGripper();
-    pause(0.8);
+    pause(0.26);
 
     % Move from pickup to mouth_start
     move_seq(hw, [
