@@ -303,8 +303,20 @@ classdef HardwareInterface < handle
         %   Verifies final position using FK.
         %   Optional z_floor_mm enables EE-only Z floor check.
         
+            persistent first_move_done;
+            if isempty(first_move_done), first_move_done = false; end
+            debug_first = ~first_move_done;
+
             q_current = obj.readAngles();
-            
+            pitch_current = -(q_current(2) + q_current(3) + q_current(4));
+            pitch_target  = -(q_target(2) + q_target(3) + q_target(4));
+
+            if debug_first
+                fprintf('  [INTERP FIRST] --- First move debug ---\n');
+                fprintf('  [INTERP FIRST] start  q=[%.1f %.1f %.1f %.1f]  pitch=%.1f\n', q_current, pitch_current);
+                fprintf('  [INTERP FIRST] target q=[%.1f %.1f %.1f %.1f]  pitch=%.1f\n', q_target, pitch_target);
+            end
+
             % Track prior EE Z so floor violations can allow upward recovery.
             prev_z = NaN;
             if nargin >= 4 && ~isempty(z_floor_mm)
@@ -315,27 +327,40 @@ classdef HardwareInterface < handle
                     prev_z = NaN;
                 end
             end
-            
+
+            if debug_first
+                try
+                    [T_start, ~] = OpenManipulator.FK(q_current);
+                    [T_targ, ~] = OpenManipulator.FK(q_target);
+                    fprintf('  [INTERP FIRST] start  FK=[%.1f %.1f %.1f]  target FK=[%.1f %.1f %.1f]\n', ...
+                        T_start(1:3,4), T_targ(1:3,4));
+                catch
+                end
+            end
+
             % Calculate max joint movement
             max_diff = max(abs(q_target - q_current));
-            
-            % Determine steps dynamicallly if not provided or for small moves
-            if max_diff < 10
-                 % Small move: Do it in 1 step to avoid jerkiness
-                 num_steps = 1;
-            elseif nargin < 3
-                 % Default: ~5 degrees per step
-                 num_steps = ceil(max_diff / 5);
+
+            % Determine steps only when caller did not provide num_steps (preserve bridge timing from executePoseMove).
+            if nargin < 3
+                if max_diff < 10
+                    num_steps = 1;
+                else
+                    num_steps = ceil(max_diff / 5);
+                end
             end
-            
+
             % Ensure at least 1 step
             num_steps = max(1, num_steps);
+            if debug_first
+                fprintf('  [INTERP FIRST] num_steps=%d  max_joint_diff=%.1f deg\n', num_steps, max_diff);
+            end
 
             % Interpolation Loop
             for step = 1:num_steps
                 t = step / num_steps;
                 q_interp = (1 - t) * q_current + t * q_target;
-                
+
                 % --- Safety Check ---
                 % Perform FK to check for ground collision
                 [T_ee, global_transforms] = OpenManipulator.FK(q_interp);
@@ -356,10 +381,10 @@ classdef HardwareInterface < handle
                     z_elbow = global_transforms(3, 4, 2);
                     z_wrist = global_transforms(3, 4, 3);
                     z_ee    = global_transforms(3, 4, 5);
-                    
-                    MIN_Z_HEIGHT = 20; 
-                    MIN_EE_HEIGHT = 5; 
-                    
+
+                    MIN_Z_HEIGHT = 20;
+                    MIN_EE_HEIGHT = 5;
+
                     if z_elbow < MIN_Z_HEIGHT || z_wrist < MIN_Z_HEIGHT || z_ee < MIN_EE_HEIGHT
                         error('Motion Safety Violation: Structure < %dmm or EE < %dmm. Aborting.', MIN_Z_HEIGHT, MIN_EE_HEIGHT);
                     end
@@ -372,12 +397,56 @@ classdef HardwareInterface < handle
                 end
 
                 obj.syncWritePositions(encoders);
+
+                if debug_first && (step == 1 || step == num_steps || mod(step, max(1, floor(num_steps/4))) == 0)
+                    q_act = obj.readAngles();
+                    pitch_act = -(q_act(2) + q_act(3) + q_act(4));
+                    try
+                        [T_act, ~] = OpenManipulator.FK(q_act);
+                        fprintf('  [INTERP FIRST] step %3d/%d t=%.2f  cmd_q=[%.1f %.1f %.1f %.1f]  actual_q=[%.1f %.1f %.1f %.1f]  pitch_act=%.1f  FK_xyz=[%.1f %.1f %.1f]\n', ...
+                            step, num_steps, t, q_interp, q_act, pitch_act, T_act(1,4), T_act(2,4), T_act(3,4));
+                    catch
+                        fprintf('  [INTERP FIRST] step %3d/%d t=%.2f  cmd_q=[%.1f %.1f %.1f %.1f]  actual_q=[%.1f %.1f %.1f %.1f]  pitch_act=%.1f\n', ...
+                            step, num_steps, t, q_interp, q_act, pitch_act);
+                    end
+                end
+
                 pause(0.05);  % 50ms between waypoints
+            end
+
+            if debug_first
+                q_act = obj.readAngles();
+                pitch_act = -(q_act(2) + q_act(3) + q_act(4));
+                fprintf('  [INTERP FIRST] after loop (before tail): q_act=[%.1f %.1f %.1f %.1f]  pitch_act=%.1f\n', q_act, pitch_act);
+            end
+
+            % Re-send final position (tail) so arm holds at target and doesn't drift/snap back
+            encoders = zeros(1, 4);
+            for i = 1:4
+                encoders(i) = obj.deg2enc(q_target(i));
+            end
+            for tail = 1:15
+                obj.syncWritePositions(encoders);
+                pause(0.02);
+            end
+
+            if debug_first
+                q_act = obj.readAngles();
+                pitch_act = -(q_act(2) + q_act(3) + q_act(4));
+                fprintf('  [INTERP FIRST] after tail (before wait): q_act=[%.1f %.1f %.1f %.1f]  pitch_act=%.1f\n', q_act, pitch_act);
             end
 
             % Wait for final position to settle
             obj.waitForMotion();
-            
+
+            if debug_first
+                q_act = obj.readAngles();
+                pitch_act = -(q_act(2) + q_act(3) + q_act(4));
+                fprintf('  [INTERP FIRST] after waitForMotion:       q_act=[%.1f %.1f %.1f %.1f]  pitch_act=%.1f\n', q_act, pitch_act);
+                first_move_done = true;
+                fprintf('  [INTERP FIRST] --- End first move debug ---\n');
+            end
+
             % Verification
             obj.verifyPose(q_target);
         end
@@ -453,8 +522,9 @@ classdef HardwareInterface < handle
                 num_steps = max(1, ceil(duration / dt));
             end
 
-            % Skip move when already at target (avoids 0.15s "hold" that can feel like a hiccup before next segment)
-            if dist_lin < 1e-6 && dist_rot < 0.5
+            % Skip move when already at target (avoids 0.15s "hold" that can feel like a hiccup before next segment).
+            % Do not skip for bridge pick: planner may intend small waypoint steps; master does not skip.
+            if ~use_bridge_pick_timing && dist_lin < 1e-6 && dist_rot < 0.5
                 return;
             end
 
@@ -576,7 +646,7 @@ classdef HardwareInterface < handle
                     % Master: no tail; wait then end-of-segment lock then verify
                     obj.waitForMotion();
                     try
-                        q_lock = OpenManipulator.IK(target_pos(1), target_pos(2), target_pos(3), target_pitch, 'elbow_down');
+                        q_lock = OpenManipulator.IK(target_pos(1), target_pos(2), target_pos(3), target_pitch, 'elbow_up');
                         obj.moveToAnglesInterpolated(q_lock, 1, z_floor_mm);
                     catch
                         % Keep best-effort endpoint if exact lock fails

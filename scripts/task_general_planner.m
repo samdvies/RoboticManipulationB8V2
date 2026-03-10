@@ -21,14 +21,13 @@ addpath(genpath(fullfile(script_dir, '..', 'Common')));
 
 cfg = task_config();
 
-%% ======================== REORDER CUBES: Y=0 NON-BRIDGE FIRST ========================
-% Process cubes on Y=0 that are not under the bridge first, so the path is
-% clear for bridge picks. Stacking order becomes: first processed = bottom.
-Y0_TOL = 10;  % mm — treat |y| < this as "on Y=0"
-on_y0       = abs(cfg.cubes(:, 2)) < Y0_TOL;
+%% ======================== REORDER CUBES: STANDARD FIRST ========================
+% Process standard (no bridge, no rotation) cubes first so they get a clean
+% pick from HOME. Rotation cubes next, bridge cubes last.
 under_bridge = (cfg.cubes(:, 3) == 1);
-% Priority: 0 = Y=0 and not bridge (first), 1 = else not bridge, 2 = bridge (last)
-priority = 2 * under_bridge + 1 * (~on_y0 & ~under_bridge);
+needs_rot    = (cfg.cubes(:, 4) == 1);
+% Priority: 0 = standard (first), 1 = rotation only (second), 2 = bridge (last)
+priority = 2 * under_bridge + 1 * (needs_rot & ~under_bridge);
 [~, order] = sort(priority);
 cfg.cubes = cfg.cubes(order, :);
 
@@ -38,7 +37,7 @@ fprintf('========================================================\n\n');
 
 %% ======================== DISPLAY WORKSPACE ========================
 
-fprintf('--- Workspace (cubes reordered: Y=0 non-bridge first) ---\n');
+fprintf('--- Workspace (cubes reordered: standard first) ---\n');
 fprintf('  Bridge:   (%.0f, %.0f)  clearance=%.0f mm\n', cfg.BRIDGE_POS, cfg.BRIDGE_CLEARANCE_Z);
 fprintf('  Target:   (%.0f, %.0f)\n', cfg.target);
 fprintf('  Holders:  %d positions\n', size(cfg.holders, 1));
@@ -89,9 +88,10 @@ for ci = 1:size(cfg.cubes, 1)
         plan{end+1} = struct('action', 'bridge_pick', 'cube', ci, ...
             'cube_xy', cube_xy, 'desc', sprintf('C%d: Bridge pick from (%.0f,%.0f)', ci, cube_xy)); %#ok<AGROW>
 
+        pick_angle_bridge = inferPickupAngle(cube_xy);
         plan{end+1} = struct('action', 'place_staging', 'cube', ci, ...
             'target_xy', staging_xy, 'stack_level', 0, 'is_rotated', false, ...
-            'pickup_angle_deg', 0, ...
+            'pickup_angle_deg', pick_angle_bridge, 'release_z_adjust', 0, ...
             'desc', sprintf('C%d: Place on staging holder H%d (%.0f,%.0f)', ci, staging_idx, staging_xy)); %#ok<AGROW>
 
         % Mark staging holder occupied, mark original cube holder free
@@ -102,9 +102,10 @@ for ci = 1:size(cfg.cubes, 1)
             end
         end
 
+        pick_angle_staging = inferPickupAngle(staging_xy);
         plan{end+1} = struct('action', 'pick', 'cube', ci, ...
             'cube_xy', staging_xy, 'for_rotation', true, ...
-            'pickup_angle_deg', cfg.holder_pickup_angles(staging_idx), ...
+            'pickup_angle_deg', pick_angle_staging, ...
             'desc', sprintf('C%d: Re-pick from staging (%.0f,%.0f)', ci, staging_xy)); %#ok<AGROW>
 
         plan{end+1} = struct('action', 'rotate', 'cube', ci, ...
@@ -114,10 +115,9 @@ for ci = 1:size(cfg.cubes, 1)
         % Free the staging holder after re-pick
         holder_occupied(staging_idx) = false;
 
-        % Place offset links to pick angle (re-pick from staging); only used when is_rotated
         plan{end+1} = struct('action', 'place_target', 'cube', ci, ...
             'target_xy', cfg.target, 'stack_level', stack_level, 'is_rotated', true, ...
-            'pickup_angle_deg', cfg.holder_pickup_angles(staging_idx), ...
+            'pickup_angle_deg', pick_angle_staging, 'release_z_adjust', -5, ...
             'desc', sprintf('C%d: Place on target (%.0f,%.0f) stack=%d rotated', ci, cfg.target, stack_level)); %#ok<AGROW>
 
     elseif under_bridge && ~needs_rotation
@@ -132,15 +132,15 @@ for ci = 1:size(cfg.cubes, 1)
             end
         end
 
-        % Bridge pick only (no rotation pick); angle place offset not used
+        pick_angle_b = inferPickupAngle(cube_xy);
         plan{end+1} = struct('action', 'place_target', 'cube', ci, ...
             'target_xy', cfg.target, 'stack_level', stack_level, 'is_rotated', true, ...
-            'pickup_angle_deg', 0, ...
+            'pickup_angle_deg', pick_angle_b, 'release_z_adjust', 0, ...
             'desc', sprintf('C%d: Place on target (%.0f,%.0f) stack=%d pitch=0', ci, cfg.target, stack_level)); %#ok<AGROW>
 
     elseif ~under_bridge && needs_rotation
         % CASE C: rotation only
-        pick_angle = getPickupAngleForXY(cfg.holders, cfg.holder_pickup_angles, cube_xy);
+        pick_angle = inferPickupAngle(cube_xy);
         plan{end+1} = struct('action', 'pick', 'cube', ci, ...
             'cube_xy', cube_xy, 'for_rotation', true, ...
             'pickup_angle_deg', pick_angle, ...
@@ -157,15 +157,15 @@ for ci = 1:size(cfg.cubes, 1)
             'current_xy', cube_xy, ...
             'desc', sprintf('C%d: Rotate pitch -90 -> 0', ci)); %#ok<AGROW>
 
-        % Place offset links to pick angle (cube was picked at pick_angle); only used when is_rotated
+        % Place offset links to pick angle (cube was picked at pick_angle)
         plan{end+1} = struct('action', 'place_target', 'cube', ci, ...
             'target_xy', cfg.target, 'stack_level', stack_level, 'is_rotated', true, ...
-            'pickup_angle_deg', pick_angle, ...
+            'pickup_angle_deg', pick_angle, 'release_z_adjust', -5, ...
             'desc', sprintf('C%d: Place on target (%.0f,%.0f) stack=%d rotated', ci, cfg.target, stack_level)); %#ok<AGROW>
 
     else
         % CASE D: standard pick and place
-        pick_angle = getPickupAngleForXY(cfg.holders, cfg.holder_pickup_angles, cube_xy);
+        pick_angle = inferPickupAngle(cube_xy);
         plan{end+1} = struct('action', 'pick', 'cube', ci, ...
             'cube_xy', cube_xy, 'for_rotation', false, ...
             'pickup_angle_deg', pick_angle, ...
@@ -178,10 +178,9 @@ for ci = 1:size(cfg.cubes, 1)
             end
         end
 
-        % No rotation; angle-based place offset not used
         plan{end+1} = struct('action', 'place_target', 'cube', ci, ...
             'target_xy', cfg.target, 'stack_level', stack_level, 'is_rotated', false, ...
-            'pickup_angle_deg', 0, ...
+            'pickup_angle_deg', pick_angle, 'release_z_adjust', 0, ...
             'desc', sprintf('C%d: Place on target (%.0f,%.0f) stack=%d', ci, cfg.target, stack_level)); %#ok<AGROW>
     end
 
@@ -296,10 +295,10 @@ for s = 1:length(plan)
             rotateCubeInHand(hw, step.current_xy, cfg);
 
         case 'place_staging'
-            placeCube(hw, step.target_xy, step.stack_level, step.is_rotated, step.pickup_angle_deg, cfg);
+            placeCube(hw, step.target_xy, step.stack_level, step.is_rotated, step.pickup_angle_deg, cfg, step.release_z_adjust);
 
         case 'place_target'
-            placeCube(hw, step.target_xy, step.stack_level, step.is_rotated, step.pickup_angle_deg, cfg);
+            placeCube(hw, step.target_xy, step.stack_level, step.is_rotated, step.pickup_angle_deg, cfg, step.release_z_adjust);
 
         otherwise
             fprintf('  Unknown action: %s — skipping.\n', step.action);
@@ -356,24 +355,17 @@ function idx = findNearestEmptyHolder(holders, occupied, ref_xy, target_xy)
     end
 end
 
-function angle_deg = getPickupAngleForXY(holders, holder_pickup_angles, xy)
-    % Return pickup angle (0, 22.5, or 45) for the holder at xy; 0 if no match.
-    idx = [];
-    for h = 1:size(holders, 1)
-        if norm(holders(h,:) - xy) < 5
-            idx = h;
-            break;
-        end
-    end
-    if isempty(idx)
-        angle_deg = 0;
-    else
-        angle_deg = holder_pickup_angles(idx);
-    end
+function angle_deg = inferPickupAngle(xy)
+    % Infer pickup angle (0, 22.5, or 45) from pick coordinates.
+    % Computes bearing from origin: atan2d(|y|, x), snapped to nearest bucket.
+    raw = atan2d(abs(xy(2)), xy(1));
+    buckets = [0, 22.5, 45];
+    [~, idx] = min(abs(buckets - raw));
+    angle_deg = buckets(idx);
 end
 
 function off = getPickOffsetForAngle(cfg, angle_deg)
-    % Return [dx, dy] mm for the given holder pickup angle (0, 22.5, or 45).
+    % Return [radial, tangential] mm for the given pickup angle (0, 22.5, or 45). Caller converts to world frame.
     if abs(angle_deg - 0) < 1
         off = cfg.PICK_OFFSET_0;
     elseif abs(angle_deg - 22.5) < 1
@@ -386,7 +378,7 @@ function off = getPickOffsetForAngle(cfg, angle_deg)
 end
 
 function off = getPlaceOffsetForAngle(cfg, angle_deg)
-    % Return [dx, dy] mm place offset for the given pick angle (0, 22.5, or 45). Used only when is_rotated.
+    % Return [radial, tangential] mm place offset for the given pick angle (0, 22.5, or 45). Caller converts to world frame.
     if abs(angle_deg - 0) < 1
         off = cfg.PLACE_OFFSET_0;
     elseif abs(angle_deg - 22.5) < 1
@@ -438,13 +430,16 @@ function waypoints = collectWaypoints(plan, cfg)
 
             case 'pick'
                 px = step.cube_xy(1); py = step.cube_xy(2);
-                off = getPickOffsetForAngle(cfg, step.pickup_angle_deg);
-                px = px + off(1); py = py + off(2);
-                % Normal picks use pitch -90 (straight down); 0 is only for bridge picks
+                if step.for_rotation
+                    off = getPickOffsetForAngle(cfg, step.pickup_angle_deg);
+                    brg = atan2(py, px);
+                    px = px + off(1)*cos(brg) - off(2)*sin(brg);
+                    py = py + off(1)*sin(brg) + off(2)*cos(brg);
+                end
                 waypoints(end+1,:) = [px, py, hover_z, -90]; %#ok<AGROW>
                 waypoints(end+1,:) = [px, py, pick_z, -90]; %#ok<AGROW>
                 waypoints(end+1,:) = [px, py, pick_z + cfg.PICK_LIFT_MM, -90]; %#ok<AGROW>
-                waypoints(end+1,:) = [px, py, place_approach_z, -90]; %#ok<AGROW>  % travel height to clear bridge
+                waypoints(end+1,:) = [px, py, place_approach_z, -90]; %#ok<AGROW>  % fly height (bridge clearance)
 
             case 'rotate'
                 cx = step.current_xy(1); cy = step.current_xy(2);
@@ -463,28 +458,38 @@ function waypoints = collectWaypoints(plan, cfg)
                 tx = step.target_xy(1); ty = step.target_xy(2);
                 sl = step.stack_level;
                 pz = cfg.CUBE_Z_SURFACE + cfg.CUBE_SIZE/2 + cfg.PICK_Z_OFFSET_MM + sl * cfg.CUBE_SIZE;
-                r_p = sqrt(tx^2 + ty^2);
-                if r_p > 1e-6
-                    ox = -cfg.PLACE_OFFSET_MAG * tx / r_p;
-                    oy = -cfg.PLACE_OFFSET_MAG * ty / r_p;
+                if step.is_rotated
+                    r_p = sqrt(tx^2 + ty^2);
+                    if r_p > 1e-6
+                        ox = -cfg.PLACE_OFFSET_MAG * tx / r_p;
+                        oy = -cfg.PLACE_OFFSET_MAG * ty / r_p;
+                    else
+                        ox = 0;
+                        oy = 0;
+                    end
+                    po = getPlaceOffsetForAngle(cfg, step.pickup_angle_deg);
+                    brg_t = atan2(ty, tx);
+                    po_wx = po(1)*cos(brg_t) - po(2)*sin(brg_t);
+                    po_wy = po(1)*sin(brg_t) + po(2)*cos(brg_t);
+                    ox = ox + po_wx;
+                    oy = oy + po_wy;
                 else
                     ox = 0;
                     oy = 0;
                 end
-                % Angle-based place offset only when cube was rotated; uses pick angle
-                if step.is_rotated
-                    po = getPlaceOffsetForAngle(cfg, step.pickup_angle_deg);
-                else
-                    po = [0, 0];
-                end
-                ox = ox + po(1) + cfg.place_offset_tuning(1);
-                oy = oy + po(2) + cfg.place_offset_tuning(2);
+                ox = ox + cfg.place_offset_tuning(1);
+                oy = oy + cfg.place_offset_tuning(2);
                 ax = tx + ox; ay = ty + oy;
                 if step.is_rotated, pp = 0; else, pp = -90; end
-                waypoints(end+1,:) = [ax, ay, place_approach_z, pp]; %#ok<AGROW>
+                place_z_approach = place_approach_z;
+                if ~step.is_rotated && isfield(cfg, 'PLACE_APPROACH_Z_STANDARD')
+                    place_z_approach = cfg.PLACE_APPROACH_Z_STANDARD;
+                end
+                waypoints(end+1,:) = [ax, ay, place_z_approach, pp]; %#ok<AGROW>
+                rza = step.release_z_adjust;
                 waypoints(end+1,:) = [ax, ay, pz + cfg.PLACE_VERTICAL_OFFSET_MM, pp]; %#ok<AGROW>  % directly above (straight-down approach)
-                waypoints(end+1,:) = [ax, ay, pz + cfg.PLACE_DROP_MM, pp]; %#ok<AGROW>  % release just above stack (drop)
-                waypoints(end+1,:) = [ax, ay, place_approach_z, pp]; %#ok<AGROW>
+                waypoints(end+1,:) = [ax, ay, pz + cfg.PLACE_DROP_MM + rza, pp]; %#ok<AGROW>  % release just above stack (drop, adjusted)
+                waypoints(end+1,:) = [ax, ay, place_z_approach, pp]; %#ok<AGROW>
         end
     end
 end

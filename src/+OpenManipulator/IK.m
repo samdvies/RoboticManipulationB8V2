@@ -1,7 +1,8 @@
-function joint_angles = IK(x, y, z, pitch, method)
+function joint_angles = IK(x, y, z, pitch, method, warn)
 %IK Inverse Kinematics for OpenManipulator-X
 %   joint_angles = IK(x, y, z, pitch)
 %   joint_angles = IK(x, y, z, pitch, method)
+%   joint_angles = IK(x, y, z, pitch, method, warn)
 %
 %   Slanted-link IK accounting for the 24mm forward offset in the
 %   shoulder-to-elbow link (L_prox = 130.23mm, beta = 10.62 deg).
@@ -12,14 +13,18 @@ function joint_angles = IK(x, y, z, pitch, method)
 %       z:      Target Z (mm) - Up
 %       pitch:  Target Pitch (degrees) - 0 = Horizontal, -90 = Down
 %       method: 'elbow_up' (default) or 'elbow_down'
+%       warn:   true (default) to show clamping warnings, false to suppress
 %
 %   Output:
 %       joint_angles: 1x4 vector [q1, q2, q3, q4] in DEGREES
 %
 %   Coordinate System: X-Forward, Y-Left, Z-Up (Right-Handed)
 
-    if nargin < 5
+    if nargin < 5 || isempty(method)
         method = 'elbow_up';
+    end
+    if nargin < 6 || isempty(warn)
+        warn = true;
     end
 
     x = double(x);
@@ -50,10 +55,12 @@ function joint_angles = IK(x, y, z, pitch, method)
     % Distance from Shoulder to Wrist Center
     D = sqrt(r_wc^2 + z_wc^2);
 
-    % Check reachability
+    % Check reachability (strict, matching master)
     max_reach = L_prox + L_dist;
     if D > max_reach
-        warning('Target out of reach. Clamping to max extent.');
+        if warn
+            warning('Target out of reach. Clamping to max extent.');
+        end
         ratio = max_reach / D;
         r_wc = r_wc * ratio;
         z_wc = z_wc * ratio;
@@ -93,6 +100,6 @@ function joint_angles = IK(x, y, z, pitch, method)
     joint_angles = [q1, q2, q3, q4];
 
     % Enforce joint limits for safe operation
-    [joint_angles, ~] = OpenManipulator.JointLimits.Clamp(joint_angles);
+    [joint_angles, ~] = OpenManipulator.JointLimits.Clamp(joint_angles, warn);
 end
 

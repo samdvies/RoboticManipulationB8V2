@@ -2,16 +2,14 @@ classdef JointLimits
 %JOINTLIMITS Joint limits for safe operation of OpenManipulator-X
 %   Centralised joint limit definitions and clamping utilities.
 %
-%   Joint 1 (Base):     ±120° — Extended to reach behind front half-plane
-%   Joint 2 (Shoulder): ±117° — Conservative safe default
-%   Joint 3 (Elbow):    ±117° — Conservative safe default
-%   Joint 4 (Wrist):    ±117° — Conservative safe default
-
+%   Joint 1 (Base):     ±90°  — Front half-plane (matching master)
+%   Joints 2–4:        ±117° — Conservative limits for reliable servo tracking
+%
     methods (Static)
 
         function limits = GetLimits()
         %GETLIMITS Returns 4x2 matrix [min, max] in degrees
-            limits = [-120, 120;
+            limits = [-90,  90;
                      -117, 117;
                      -117, 117;
                      -117, 117];
@@ -22,13 +20,16 @@ classdef JointLimits
             names = {'Base', 'Shoulder', 'Elbow', 'Wrist'};
         end
 
-        function [q_clamped, was_clamped] = Clamp(q)
+        function [q_clamped, was_clamped] = Clamp(q, warn)
         %CLAMP Clamp joint angles to safe limits
         %   [q_clamped, was_clamped] = Clamp(q)
+        %   [q_clamped, was_clamped] = Clamp(q, warn)
         %
-        %   Input:  q - 1x4 joint angles in degrees
+        %   Input:  q    - 1x4 joint angles in degrees
+        %           warn - true (default) to print clamping messages
         %   Output: q_clamped   - 1x4 clamped angles
         %           was_clamped - 1x4 logical array
+            if nargin < 2 || isempty(warn), warn = true; end
             limits = OpenManipulator.JointLimits.GetLimits();
             names = OpenManipulator.JointLimits.GetNames();
             q = q(:)';
@@ -39,13 +40,17 @@ classdef JointLimits
                 if q(i) < limits(i, 1)
                     q_clamped(i) = limits(i, 1);
                     was_clamped(i) = true;
-                    fprintf('Warning: Joint %d (%s) clamped: %.1f° -> %.1f° (limit: [%.0f°, %.0f°])\n', ...
-                        i, names{i}, q(i), q_clamped(i), limits(i, 1), limits(i, 2));
+                    if warn
+                        fprintf('Warning: Joint %d (%s) clamped: %.1f° -> %.1f° (limit: [%.0f°, %.0f°])\n', ...
+                            i, names{i}, q(i), q_clamped(i), limits(i, 1), limits(i, 2));
+                    end
                 elseif q(i) > limits(i, 2)
                     q_clamped(i) = limits(i, 2);
                     was_clamped(i) = true;
-                    fprintf('Warning: Joint %d (%s) clamped: %.1f° -> %.1f° (limit: [%.0f°, %.0f°])\n', ...
-                        i, names{i}, q(i), q_clamped(i), limits(i, 1), limits(i, 2));
+                    if warn
+                        fprintf('Warning: Joint %d (%s) clamped: %.1f° -> %.1f° (limit: [%.0f°, %.0f°])\n', ...
+                            i, names{i}, q(i), q_clamped(i), limits(i, 1), limits(i, 2));
+                    end
                 end
             end
         end
