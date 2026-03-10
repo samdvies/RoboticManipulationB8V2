@@ -1,18 +1,28 @@
-function pickCube(hw, cube_xy, for_rotation, cfg)
+function pickCube(hw, cube_xy, for_rotation, pickup_angle_deg, cfg)
 % PICKCUBE  Standard pick: approach, descend, grip, lift.
 % Uses pitch -90 (downwards) as default for vertical grip.
 %
 % Inputs:
-%   hw            - OpenManipulator.HardwareInterface instance
-%   cube_xy       - [x, y] position of cube (mm)
-%   for_rotation  - logical; if true, adds PICK_OFFSET_X to X for grip alignment
-%   cfg           - config struct from task_config()
+%   hw              - OpenManipulator.HardwareInterface instance
+%   cube_xy         - [x, y] position of cube (mm)
+%   for_rotation    - logical (kept for compatibility; offset is by angle)
+%   pickup_angle_deg - holder angle in degrees (0, 22.5, or 45); offset applied from cfg
+%   cfg             - config struct from task_config()
 
 pick_x = cube_xy(1);
 pick_y = cube_xy(2);
-if for_rotation
-    pick_x = pick_x + cfg.PICK_OFFSET_X;
+% Apply angle-specific pick offset (0°, 22.5°, or 45°)
+if abs(pickup_angle_deg - 0) < 1
+    off = cfg.PICK_OFFSET_0;
+elseif abs(pickup_angle_deg - 22.5) < 1
+    off = cfg.PICK_OFFSET_22_5;
+elseif abs(pickup_angle_deg - 45) < 1
+    off = cfg.PICK_OFFSET_45;
+else
+    off = [0, 0];
 end
+pick_x = pick_x + off(1);
+pick_y = pick_y + off(2);
 
 pick_z  = cfg.CUBE_Z_SURFACE + cfg.CUBE_SIZE / 2;
 hover_z = cfg.HOVER_Z;
