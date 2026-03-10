@@ -82,7 +82,7 @@ cfg.holders = [
 % =========================================================================
 cfg.cubes = [
     225,    0,   1,   0;    % Cube 1 (bottom): under bridge, no rotation
-    150, -150,   0,   1;    % Cube 2 (middle): needs rotation
+    150, -150,   0,   0;    % Cube 2 (middle): needs rotation
     75,   -200,   0,   0;    % Cube 3 (top):    no rotation
 ];
 
