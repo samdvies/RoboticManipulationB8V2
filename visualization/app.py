@@ -32,6 +32,10 @@ class MainWindow(QMainWindow):
         self.HOME_POSE = np.array([200, 0, 100, 0]) # X, Y, Z, Pitch
         self.safety_bypass = False
         self.gripper = GripperSim()
+        # Sequence support for scripted demo motions
+        self.sequence_queue = []
+        self.sequence_active = False
+        self.sequence_on_complete = None
 
         # Central Widget and Layout
         central_widget = QWidget()
@@ -181,6 +185,19 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.btn_move)
         btn_layout.addWidget(self.btn_stop)
         motion_layout.addLayout(btn_layout)
+
+        # Scripted Demo Buttons
+        demo_layout = QHBoxLayout()
+        self.btn_demo_cup = QPushButton("Cup Pour Demo")
+        self.btn_demo_cup.clicked.connect(self.run_cup_pour_demo)
+        self.btn_demo_obj = QPushButton("Object Path Demo")
+        self.btn_demo_obj.clicked.connect(self.run_object_path_demo)
+        self.btn_demo_cup2 = QPushButton("Cup 2 Pour Demo")
+        self.btn_demo_cup2.clicked.connect(self.run_second_cup_pour_demo)
+        demo_layout.addWidget(self.btn_demo_cup)
+        demo_layout.addWidget(self.btn_demo_obj)
+        demo_layout.addWidget(self.btn_demo_cup2)
+        motion_layout.addLayout(demo_layout)
         
         # Status Label
         self.motion_status = QLabel("Ready")
@@ -375,6 +392,9 @@ class MainWindow(QMainWindow):
         if self.is_moving:
             return
             
+        # When starting a standalone move from the UI, cancel any queued sequence
+        if not self.sequence_active:
+            self.sequence_queue = []
         self.safety_bypass = False
             
         # Get targets
@@ -424,7 +444,8 @@ class MainWindow(QMainWindow):
             
             self.is_moving = True
             self.btn_move.setEnabled(False)
-            self.motion_status.setText("Moving...")
+            if not self.sequence_active:
+                self.motion_status.setText("Moving...")
             self.timer.start(int(self.dt * 1000))
             
         except Exception as e:
@@ -478,6 +499,61 @@ class MainWindow(QMainWindow):
         self.motion_status.setText("Stopped.")
         self.safety_bypass = False
 
+        # Cancel any remaining scripted sequence
+        self.sequence_active = False
+        self.sequence_queue = []
+
+    def _complete_motion_step(self, status_text="Target Reached."):
+        """Handle natural completion of a motion (not an emergency stop)."""
+        self.is_moving = False
+        self.timer.stop()
+        self.btn_move.setEnabled(True)
+        self.safety_bypass = False
+
+        if self.sequence_active:
+            if self.sequence_queue:
+                # Proceed to next step in the scripted sequence
+                self.motion_status.setText("Sequence step complete...")
+                self._start_next_in_sequence()
+            else:
+                # Final step of the current sequence reached
+                self.sequence_active = False
+                cb = self.sequence_on_complete
+                self.sequence_on_complete = None
+                if cb is not None:
+                    cb()
+                else:
+                    self.motion_status.setText(status_text)
+        else:
+            # Standalone move completion
+            self.motion_status.setText(status_text)
+
+    def _start_sequence(self, poses, on_complete=None):
+        """Initialize a new scripted motion sequence given a list of task-space poses."""
+        if self.is_moving:
+            return
+        self.sequence_queue = list(poses)
+        self.sequence_active = True
+        self.sequence_on_complete = on_complete
+        # Use linear task-space interpolation for sequences
+        self.radio_task.setChecked(True)
+        self._start_next_in_sequence()
+
+    def _start_next_in_sequence(self):
+        """Start the next motion in the active scripted sequence."""
+        if not self.sequence_queue:
+            self.sequence_active = False
+            self.motion_status.setText("Sequence complete.")
+            return
+
+        pose = self.sequence_queue.pop(0)
+        x, y, z, pitch = pose
+        self.target_inputs['x'].setValue(float(x))
+        self.target_inputs['y'].setValue(float(y))
+        self.target_inputs['z'].setValue(float(z))
+        self.target_inputs['pitch'].setValue(float(pitch))
+        self.start_motion()
+
     def update_motion(self):
         if not self.is_moving:
             return
@@ -509,8 +585,7 @@ class MainWindow(QMainWindow):
                     s = np.clip(s, 0.0, 1.0)
                     new_q = self.jac_final_start_q + (self.jac_final_target_q - self.jac_final_start_q) * s
                     if s >= 1.0:
-                        self.stop_motion()
-                        self.motion_status.setText("Target Reached (Jac Hybrid).")
+                        self._complete_motion_step("Target Reached (Jac Hybrid).")
                         return
                 else:
                     current_fk_T, _ = FK(self.current_q_anim)
@@ -620,8 +695,7 @@ class MainWindow(QMainWindow):
                 self.update_explicit_q(new_q)
             
             if t_normalized >= 1.0 and mode != 2:
-                self.stop_motion()
-                self.motion_status.setText("Target Reached.")
+                self._complete_motion_step("Target Reached.")
                 
         except Exception as e:
             print(f"Motion Error: {e}")
@@ -696,6 +770,161 @@ class MainWindow(QMainWindow):
         )
         # Update 3D jaws
         self.renderer.update_gripper(state['jaw_width_mm'])
+
+    # ── Scripted Demo Sequences ─────────────────────────────────────
+
+    def run_cup_pour_demo(self):
+        """
+        Demo 1:
+        - Pick the first cup at (75, -175, 60, pitch=0)
+        - Pour into the second cup at (200, 0)
+        - Return the cup to its original pose.
+        """
+        if self.is_moving:
+            return
+
+        # Start with gripper wide open so we approach the cup safely
+        self.gripper_open()
+
+        # Source cup at (75, -175)
+        src_x, src_y = 75.0, -175.0
+
+        # Phase 1: approach the source cup, respecting Z>=100 for horizontal motion
+        approach_poses = [
+            np.array([src_x, src_y, 150.0, 0.0]),  # Above cup, safe height
+            np.array([src_x, src_y, 100.0, 0.0]),  # Just above rim
+            np.array([src_x, src_y, 60.0, 0.0]),   # Pick height
+        ]
+
+        def after_pick():
+            # Tighten grip once we're at Z=60 to hold the cup (approx 60mm wide)
+            self.gripper_object(60.0)
+
+            # Phase 2: carry to the target cup at (200, 0),
+            # pour while staying above the receiving cup height (~100mm),
+            # then return the cup to its original position.
+            tgt_x, tgt_y = 200.0, 0.0
+            carry_pour_and_return_poses = [
+                # Carry to second cup
+                np.array([src_x, src_y, 150.0, 0.0]),          # Lift cup up vertically
+                np.array([tgt_x, tgt_y, 150.0, 0.0]),          # Move over target cup at safe Z
+                np.array([tgt_x, tgt_y, 130.0, 0.0]),          # Lower over target cup (still above 100mm)
+                np.array([tgt_x, tgt_y, 130.0, -60.0]),        # Start pour
+                np.array([tgt_x, tgt_y, 130.0, -90.0]),        # Full pour
+                # Upright and lift back up
+                np.array([tgt_x, tgt_y, 150.0, 0.0]),          # Lift and return pitch to 0
+                # Return to original cup position
+                np.array([src_x, src_y, 150.0, 0.0]),          # Above source
+                np.array([src_x, src_y, 60.0, 0.0]),           # Back to original pick height
+            ]
+
+            self._start_sequence(carry_pour_and_return_poses)
+
+        # First run the approach phase; when that finishes, `after_pick`
+        # will be invoked to grip and continue with the pour.
+        self._start_sequence(approach_poses, on_complete=after_pick)
+
+    def run_second_cup_pour_demo(self):
+        """
+        Demo 3:
+        - Take the second cup at (200, 0, 60, pitch=0)
+        - Move it toward a "mouth" region in front/above the robot
+        - Perform a natural-looking pour motion along a short arc
+        - Repeat the pour motion 3 times.
+        """
+        if self.is_moving:
+            return
+
+        # Start with gripper open to safely approach the cup
+        self.gripper_open()
+
+        # Second cup initial pose and "mouth" region
+        src_x, src_y, src_z = 200.0, 0.0, 60.0
+        # Start roughly at 150, 150, 100 and move up/out to about 200, 200, 150
+        mouth_start = np.array([150.0, 150.0, 100.0, 0.0])
+        mouth_mid   = np.array([175.0, 175.0, 125.0, -45.0])
+        mouth_end   = np.array([200.0, 200.0, 150.0, -90.0])
+
+        # Phase 1: approach and pick the second cup
+        approach_poses = [
+            np.array([src_x, src_y, 150.0, 0.0]),   # Above cup
+            np.array([src_x, src_y, 100.0, 0.0]),   # Just above rim
+            np.array([src_x, src_y, src_z,  0.0]),  # At cup height (60mm)
+        ]
+
+        def after_second_pick():
+            # Grip the cup (assume ~70mm width)
+            self.gripper_object(70.0)
+
+            poses = []
+            # Move from pickup to "mouth" start position
+            poses.append(np.array([src_x, src_y, 150.0, 0.0]))          # Lift cup up
+            poses.append(mouth_start.copy())                            # To starting drink pose
+
+            # Three "sip" cycles: follow an arc toward the mouth while rotating,
+            # then come back to the start pose.
+            for _ in range(3):
+                poses.append(mouth_mid.copy())                          # Halfway: slight tilt
+                poses.append(mouth_end.copy())                          # Full tilt near mouth
+                poses.append(mouth_mid.copy())                          # Back along arc
+                poses.append(mouth_start.copy())                        # Upright at start
+
+            self._start_sequence(poses)
+
+        self._start_sequence(approach_poses, on_complete=after_second_pick)
+
+    def run_object_path_demo(self):
+        """
+        Demo 2:
+        - Grip a 25mm object at (-150, 150, 160, pitch=0)
+        - Move it to (175, 0, 270, pitch=0)
+        - Then move around the specified coordinates 4 times.
+        """
+        if self.is_moving:
+            return
+
+        # Configure gripper for 25mm object
+        self.gripper_object(25.0)
+
+        poses = []
+
+        # Approach and pick the stirrer at (150, -150, 170)
+        src_x, src_y = 150.0, -150.0
+        center_x, center_y = 200.0, 0.0
+
+        poses.append(np.array([src_x, src_y, 210.0, 0.0]))   # Above object
+        poses.append(np.array([src_x, src_y, 170.0, 0.0]))   # At object height
+
+        # Move to drop/carry position near (200, 0, 270) without dipping near the second cup height
+        poses.append(np.array([src_x,      0.0, 270.0, 0.0]))      # Intermediate over center line
+        poses.append(np.array([center_x, center_y, 310.0, 0.0]))   # Above stirring center
+        poses.append(np.array([center_x, center_y, 270.0, 0.0]))   # Stirring center height
+
+        # New stirring coordinates around X=200 (Z=180, pitch=0)
+        path_points = [
+            (207.500,  3.107, 180.0),
+            (203.107,  7.500, 180.0),
+            (196.893,  7.500, 180.0),
+            (192.500,  3.107, 180.0),
+            (192.500, -3.107, 180.0),
+            (196.893, -7.500, 180.0),
+            (203.107, -7.500, 180.0),
+            (207.500, -3.107, 180.0),
+        ]
+
+        for _ in range(4):  # Loop around the path 4 times
+            for x, y, z in path_points:
+                poses.append(np.array([float(x), float(y), float(z), 0.0]))
+
+        # Return stirrer to its original position without descending near the second cup
+        poses.extend([
+            np.array([center_x, center_y, 270.0, 0.0]),    # Back to stirring center
+            np.array([src_x,      0.0,    270.0, 0.0]),    # Move away in Y only
+            np.array([src_x,    src_y,    210.0, 0.0]),    # Above original pick
+            np.array([src_x,    src_y,    170.0, 0.0]),    # Original pick height
+        ])
+
+        self._start_sequence(poses)
 
     def closeEvent(self, event):
         print("Closing Application...")
