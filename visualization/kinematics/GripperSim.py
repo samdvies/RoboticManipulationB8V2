@@ -22,8 +22,8 @@ class GripperSim:
     GRIPPER_CLOSE_ENC = 2276   # 200°  — fully closed (cube pickup)
     ENCODER_PER_DEG   = 4096 / 360  # ~11.378 enc/deg
 
-    # Physical jaw geometry (approximate for XM430 gripper)
-    JAW_MAX_WIDTH_MM  = 40.0   # fully open jaw gap
+    # Physical jaw geometry (approximate; tuned so full open ≈ 80mm in sim)
+    JAW_MAX_WIDTH_MM  = 80.0   # fully open jaw gap
     JAW_MIN_WIDTH_MM  =  0.0   # fully closed
 
     # Force simulation (maps to DYNAMIXEL present_current concept)

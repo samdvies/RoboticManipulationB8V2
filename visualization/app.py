@@ -842,8 +842,8 @@ class MainWindow(QMainWindow):
         src_x, src_y, src_z = 200.0, 0.0, 60.0
         # Start roughly at 150, 150, 100 and move up/out to about 200, 200, 150
         mouth_start = np.array([150.0, 150.0, 100.0, 0.0])
-        mouth_mid   = np.array([175.0, 175.0, 125.0, -45.0])
-        mouth_end   = np.array([200.0, 200.0, 150.0, -90.0])
+        mouth_mid   = np.array([175.0, 175.0, 125.0, -40.0])
+        mouth_end   = np.array([200.0, 200.0, 150.0, -70.0])
 
         # Phase 1: approach and pick the second cup
         approach_poses = [
@@ -853,8 +853,8 @@ class MainWindow(QMainWindow):
         ]
 
         def after_second_pick():
-            # Grip the cup (assume ~70mm width)
-            self.gripper_object(70.0)
+            # Grip the cup to a 60mm jaw width
+            self.gripper_object(60.0)
 
             poses = []
             # Move from pickup to "mouth" start position
@@ -883,48 +883,59 @@ class MainWindow(QMainWindow):
         if self.is_moving:
             return
 
-        # Configure gripper for 25mm object
-        self.gripper_object(25.0)
-
-        poses = []
+        # Keep gripper fully open (~80mm) until we are at the stirrer, then
+        # close to a 25mm gap at the pick height.
+        self.gripper_open()
 
         # Approach and pick the stirrer at (150, -150, 170)
         src_x, src_y = 150.0, -150.0
         center_x, center_y = 200.0, 0.0
 
-        poses.append(np.array([src_x, src_y, 210.0, 0.0]))   # Above object
-        poses.append(np.array([src_x, src_y, 170.0, 0.0]))   # At object height
-
-        # Move to drop/carry position near (200, 0, 270) without dipping near the second cup height
-        poses.append(np.array([src_x,      0.0, 270.0, 0.0]))      # Intermediate over center line
-        poses.append(np.array([center_x, center_y, 310.0, 0.0]))   # Above stirring center
-        poses.append(np.array([center_x, center_y, 270.0, 0.0]))   # Stirring center height
-
-        # New stirring coordinates around X=200 (Z=180, pitch=0)
-        path_points = [
-            (207.500,  3.107, 180.0),
-            (203.107,  7.500, 180.0),
-            (196.893,  7.500, 180.0),
-            (192.500,  3.107, 180.0),
-            (192.500, -3.107, 180.0),
-            (196.893, -7.500, 180.0),
-            (203.107, -7.500, 180.0),
-            (207.500, -3.107, 180.0),
+        approach_poses = [
+            np.array([src_x, src_y, 210.0, 0.0]),   # Above object
+            np.array([src_x, src_y, 170.0, 0.0]),   # At object height
         ]
 
-        for _ in range(4):  # Loop around the path 4 times
-            for x, y, z in path_points:
-                poses.append(np.array([float(x), float(y), float(z), 0.0]))
+        def after_stir_pick():
+            # Now grip the stirrer to a 25mm jaw width
+            self.gripper_object(25.0)
 
-        # Return stirrer to its original position without descending near the second cup
-        poses.extend([
-            np.array([center_x, center_y, 270.0, 0.0]),    # Back to stirring center
-            np.array([src_x,      0.0,    270.0, 0.0]),    # Move away in Y only
-            np.array([src_x,    src_y,    210.0, 0.0]),    # Above original pick
-            np.array([src_x,    src_y,    170.0, 0.0]),    # Original pick height
-        ])
+            poses = []
 
-        self._start_sequence(poses)
+            # Move to drop/carry position near (200, 0, 270) without dipping near the second cup height
+            poses.append(np.array([src_x,      0.0, 270.0, 0.0]))      # Intermediate over center line
+            poses.append(np.array([center_x, center_y, 310.0, 0.0]))   # Above stirring center
+            poses.append(np.array([center_x, center_y, 270.0, 0.0]))   # Stirring center height
+
+            # New stirring coordinates around X=200 (Z=180, pitch=0)
+            path_points = [
+                (207.500,  3.107, 180.0),
+                (203.107,  7.500, 180.0),
+                (196.893,  7.500, 180.0),
+                (192.500,  3.107, 180.0),
+                (192.500, -3.107, 180.0),
+                (196.893, -7.500, 180.0),
+                (203.107, -7.500, 180.0),
+                (207.500, -3.107, 180.0),
+            ]
+
+            for _ in range(4):  # Loop around the path 4 times
+                for x, y, z in path_points:
+                    poses.append(np.array([float(x), float(y), float(z), 0.0]))
+
+            # Return stirrer to its original position without descending near the second cup
+            poses.extend([
+                np.array([center_x, center_y, 270.0, 0.0]),    # Back to stirring center
+                np.array([src_x,      0.0,    270.0, 0.0]),    # Move away in Y only
+                np.array([src_x,    src_y,    210.0, 0.0]),    # Above original pick
+                np.array([src_x,    src_y,    170.0, 0.0]),    # Original pick height
+            ])
+
+            self._start_sequence(poses)
+
+        # First, just move to the stirrer with the gripper fully open. Once
+        # that sequence finishes, we grip to 25mm and run the stirring path.
+        self._start_sequence(approach_poses, on_complete=after_stir_pick)
 
     def closeEvent(self, event):
         print("Closing Application...")
