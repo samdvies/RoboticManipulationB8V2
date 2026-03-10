@@ -269,12 +269,12 @@ cleanup = onCleanup(@() safeShutdown(hw, cfg));
 hw.configure(cfg.VELOCITY);
 hw.enableTorque();
 hw.openGripper();
-pause(0.5);
+pause(0.25);
 
 fprintf('Moving to HOME...\n');
 hw.moveToPose(cfg.HOME_POSE(1), cfg.HOME_POSE(2), cfg.HOME_POSE(3), cfg.HOME_POSE(4), ...
               cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
-pause(0.5);
+pause(0.25);
 
 fprintf('\n========================================================\n');
 fprintf('  Executing Plan (%d steps)\n', length(plan));
@@ -309,7 +309,7 @@ for s = 1:length(plan)
         fprintf('    Returning to HOME...\n');
         hw.moveToPose(cfg.HOME_POSE(1), cfg.HOME_POSE(2), cfg.HOME_POSE(3), cfg.HOME_POSE(4), ...
                       cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
-        pause(0.5);
+        pause(0.25);
     end
 end
 
@@ -320,8 +320,8 @@ fprintf('  Task Complete — Returning Home\n');
 fprintf('========================================================\n\n');
 
 hw.moveToPose(cfg.HOME_POSE(1), cfg.HOME_POSE(2), cfg.HOME_POSE(3), cfg.HOME_POSE(4), ...
-              cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
-pause(0.5);
+    cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
+pause(0.25);
 hw.disconnect();
 fprintf('=== Done ===\n');
 
@@ -390,6 +390,32 @@ function off = getPlaceOffsetForAngle(cfg, angle_deg)
     end
 end
 
+function off = getPickOffsetStdForAngle(cfg, angle_deg)
+    % Return [radial, tangential] mm for standard (non-rotation) pick at the given angle (0, 22.5, or 45).
+    if abs(angle_deg - 0) < 1
+        off = cfg.PICK_OFFSET_STD_0;
+    elseif abs(angle_deg - 22.5) < 1
+        off = cfg.PICK_OFFSET_STD_22_5;
+    elseif abs(angle_deg - 45) < 1
+        off = cfg.PICK_OFFSET_STD_45;
+    else
+        off = [0, 0];
+    end
+end
+
+function off = getPlaceOffsetStdForAngle(cfg, angle_deg)
+    % Return [radial, tangential] mm place offset for standard (non-rotated) place at the given angle (0, 22.5, or 45).
+    if abs(angle_deg - 0) < 1
+        off = cfg.PLACE_OFFSET_STD_0;
+    elseif abs(angle_deg - 22.5) < 1
+        off = cfg.PLACE_OFFSET_STD_22_5;
+    elseif abs(angle_deg - 45) < 1
+        off = cfg.PLACE_OFFSET_STD_45;
+    else
+        off = [0, 0];
+    end
+end
+
 function waypoints = collectWaypoints(plan, cfg)
     % Build an Nx4 matrix of [x, y, z, pitch] for all waypoints in the plan
     % for IK/FK validation.
@@ -432,10 +458,12 @@ function waypoints = collectWaypoints(plan, cfg)
                 px = step.cube_xy(1); py = step.cube_xy(2);
                 if step.for_rotation
                     off = getPickOffsetForAngle(cfg, step.pickup_angle_deg);
-                    brg = atan2(py, px);
-                    px = px + off(1)*cos(brg) - off(2)*sin(brg);
-                    py = py + off(1)*sin(brg) + off(2)*cos(brg);
+                else
+                    off = getPickOffsetStdForAngle(cfg, step.pickup_angle_deg);
                 end
+                brg = atan2(py, px);
+                px = px + off(1)*cos(brg) - off(2)*sin(brg);
+                py = py + off(1)*sin(brg) + off(2)*cos(brg);
                 waypoints(end+1,:) = [px, py, hover_z, -90]; %#ok<AGROW>
                 waypoints(end+1,:) = [px, py, pick_z, -90]; %#ok<AGROW>
                 waypoints(end+1,:) = [px, py, pick_z + cfg.PICK_LIFT_MM, -90]; %#ok<AGROW>
@@ -468,15 +496,16 @@ function waypoints = collectWaypoints(plan, cfg)
                         oy = 0;
                     end
                     po = getPlaceOffsetForAngle(cfg, step.pickup_angle_deg);
-                    brg_t = atan2(ty, tx);
-                    po_wx = po(1)*cos(brg_t) - po(2)*sin(brg_t);
-                    po_wy = po(1)*sin(brg_t) + po(2)*cos(brg_t);
-                    ox = ox + po_wx;
-                    oy = oy + po_wy;
                 else
                     ox = 0;
                     oy = 0;
+                    po = getPlaceOffsetStdForAngle(cfg, step.pickup_angle_deg);
                 end
+                brg_t = atan2(ty, tx);
+                po_wx = po(1)*cos(brg_t) - po(2)*sin(brg_t);
+                po_wy = po(1)*sin(brg_t) + po(2)*cos(brg_t);
+                ox = ox + po_wx;
+                oy = oy + po_wy;
                 ox = ox + cfg.place_offset_tuning(1);
                 oy = oy + cfg.place_offset_tuning(2);
                 ax = tx + ox; ay = ty + oy;

@@ -24,7 +24,7 @@ if needs_pullout
     safe_y = cy * scale;
     fprintf('    [rotate] Pull out to safe radius (%.1f, %.1f)...\n', safe_x, safe_y);
     hw.moveToPose(safe_x, safe_y, hover_z, -90, cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
-    pause(0.3);
+    pause(0.15);
     rot_x = safe_x;
     rot_y = safe_y;
 else
@@ -34,17 +34,17 @@ end
 
 fprintf('    [rotate] Pitch -90 -> 0...\n');
 hw.moveToPose(rot_x, rot_y, hover_z, 0, cfg.MOVE_TIME * 1.5, cfg.MOTION_MODE, cfg.Z_FLOOR);
-pause(0.5);
+pause(0.25);
 
 if needs_pullout
     fprintf('    [rotate] Return to (%.1f, %.1f)...\n', cx, cy);
     hw.moveToPose(cx, cy, hover_z, 0, cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
-    pause(0.3);
+    pause(0.15);
 end
 
 final_x = cx; final_y = cy;
 fprintf('    [rotate] Lift to travel height z=%.1f (clear bridge)...\n', cfg.PLACE_APPROACH_Z);
 hw.moveToPose(final_x, final_y, cfg.PLACE_APPROACH_Z, 0, cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
-pause(0.3);
+pause(0.15);
 
 end

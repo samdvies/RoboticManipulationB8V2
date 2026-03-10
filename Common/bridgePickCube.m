@@ -4,13 +4,15 @@ function bridgePickCube(hw, cube_xy, cfg)
 % Uses OpenManipulator.BridgeAvoidance to plan bridge-safe entry/exit waypoints,
 % then executes them with preplanned_route context. Pitch 0 (forwards) for clearance.
 %
+% No pick offsets (PICK_OFFSET_* / PICK_OFFSET_STD_*) are applied; nominal cube_xy is used.
+%
 % Inputs:
 %   hw      - OpenManipulator.HardwareInterface instance
 %   cube_xy - [x, y] position of cube under the bridge (mm)
 %   cfg     - config struct from task_config()
 
 PITCH_BRIDGE = 0;
-BRIDGE_MOVE_TIME = 2.5;
+BRIDGE_MOVE_TIME = 1.25;   % 2x speed (was 2.5)
 Z_FLOOR = 10;
 MODE_EXEC = 1;
 
@@ -40,12 +42,12 @@ home_pose = [200, 0, 180, 0];
 fprintf('    [bridge-pick] Moving to bridge start pose [200, 0, 180, 0]...\n');
 hw.moveToPose(home_pose(1), home_pose(2), home_pose(3), home_pose(4), ...
     BRIDGE_MOVE_TIME, MODE_EXEC, Z_FLOOR);
-pause(0.5);
+pause(0.25);
 
 % Set jaw to 50% for bridge clearance (fully open may collide)
 fprintf('    [bridge-pick] Setting jaw to 50%% for bridge clearance...\n');
 hw.setGripperPosition(50);
-pause(0.8);
+pause(0.4);
 
 cube_x = cube_xy(1);
 cube_y = cube_xy(2);
@@ -84,12 +86,12 @@ for i = 1:size(wp_entry, 1)
         exec_mode_wp = 2;
     end
     hw.moveToPose(wp(1), wp(2), wp(3), wp(4), BRIDGE_MOVE_TIME, exec_mode_wp, Z_FLOOR, entry_ctx);
-    pause(0.3);
+    pause(0.15);
 end
 % Final lock at exact pick pose
 hw.moveToPose(pick_pose(1), pick_pose(2), pick_pose(3), pick_pose(4), ...
-    max(0.8, 0.5 * BRIDGE_MOVE_TIME), 1, Z_FLOOR, entry_ctx);
-pause(0.2);
+    max(0.4, 0.5 * BRIDGE_MOVE_TIME), 1, Z_FLOOR, entry_ctx);
+pause(0.1);
 
 fprintf('    [bridge-pick] Close gripper...\n');
 hw.closeGripper();
@@ -102,7 +104,7 @@ lift_ctx = struct('zones', bridge_zones, ...
     'dynamic_pitch', USE_DYNAMIC_PITCH);
 hw.moveToPose(lift_after_pick_pose(1), lift_after_pick_pose(2), lift_after_pick_pose(3), lift_after_pick_pose(4), ...
     BRIDGE_MOVE_TIME, MODE_EXEC, Z_FLOOR, lift_ctx);
-pause(0.3);
+pause(0.15);
 
 % --- Phase 3: Exit route back to bridge start pose ---
 exit_ctx = struct('zones', bridge_zones, ...
@@ -114,7 +116,7 @@ for i = 1:size(wp_exit, 1)
     fprintf('    [bridge-pick] Exit %d/%d -> [%.1f, %.1f, %.1f, %.1f]\n', ...
         i, size(wp_exit, 1), wp(1), wp(2), wp(3), wp(4));
     hw.moveToPose(wp(1), wp(2), wp(3), wp(4), BRIDGE_MOVE_TIME, MODE_EXEC, Z_FLOOR, exit_ctx);
-    pause(0.3);
+    pause(0.15);
 end
 
 end

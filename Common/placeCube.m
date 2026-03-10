@@ -9,8 +9,8 @@ function placeCube(hw, target_xy, stack_level, is_rotated, pickup_angle_deg, cfg
 %   target_xy        - [x, y] target position (mm)
 %   stack_level      - 0 = on surface, 1 = on top of 1 cube, 2 = on top of 2, etc.
 %   is_rotated       - logical; true -> pitch 0 (forwards), false -> pitch -90 (downwards)
-%   pickup_angle_deg - inferred pick bearing (0, 22.5, or 45); selects angle-based
-%                      place offset (always applied)
+%   pickup_angle_deg - PICK angle (inferred pick bearing 0, 22.5, or 45); selects
+%                      which place offset set to use (same logic as rotational offsets).
 %   cfg              - config struct from task_config()
 %   release_z_adjust - (optional) mm to add to release height; negative = lower (default 0)
 
@@ -30,7 +30,6 @@ else
     transit_pitch = cfg.TRANSIT_PITCH;
 end
 
-% Place offsets: only apply radial and angle-specific offsets for rotated (pitch 0) places
 if is_rotated
     r_place = sqrt(tx^2 + ty^2);
     if r_place > 1e-6
@@ -49,15 +48,22 @@ if is_rotated
     else
         po = [0, 0];
     end
-    bearing_place = atan2(ty, tx);
-    po_wx = po(1)*cos(bearing_place) - po(2)*sin(bearing_place);
-    po_wy = po(1)*sin(bearing_place) + po(2)*cos(bearing_place);
 else
     off_x = 0;
     off_y = 0;
-    po_wx = 0;
-    po_wy = 0;
+    if abs(pickup_angle_deg - 0) < 1
+        po = cfg.PLACE_OFFSET_STD_0;
+    elseif abs(pickup_angle_deg - 22.5) < 1
+        po = cfg.PLACE_OFFSET_STD_22_5;
+    elseif abs(pickup_angle_deg - 45) < 1
+        po = cfg.PLACE_OFFSET_STD_45;
+    else
+        po = [0, 0];
+    end
 end
+bearing_place = atan2(ty, tx);
+po_wx = po(1)*cos(bearing_place) - po(2)*sin(bearing_place);
+po_wy = po(1)*sin(bearing_place) + po(2)*cos(bearing_place);
 act_x = tx + off_x + po_wx + cfg.place_offset_tuning(1);
 act_y = ty + off_y + po_wy + cfg.place_offset_tuning(2);
 
@@ -66,28 +72,28 @@ fprintf('    [place] Target (%.1f, %.1f) stack=%d  pick_angle=%.1f°  offset=(%.
 
 fprintf('    [place] Above target (z=%.1f, pitch %.0f)...\n', approach_z, transit_pitch);
 hw.moveToPose(act_x, act_y, approach_z, transit_pitch, cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
-pause(0.3);
+pause(0.15);
 
 above_place_z = place_z + cfg.PLACE_VERTICAL_OFFSET_MM;
 fprintf('    [place] Directly above target (z=%.1f, pitch %.0f)...\n', above_place_z, work_pitch);
 hw.moveToPose(act_x, act_y, above_place_z, work_pitch, cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
-pause(0.3);
+pause(0.15);
 
 drop_z = place_z + cfg.PLACE_DROP_MM + release_z_adjust;
 fprintf('    [place] Lower to z=%.1f (drop height, adjust=%.1f mm)...\n', drop_z, release_z_adjust);
 hw.moveToPose(act_x, act_y, drop_z, work_pitch, cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
-pause(0.5);
+pause(0.25);
 
 fprintf('    [place] Lock pitch at %.0f...\n', work_pitch);
 hw.moveToPose(act_x, act_y, drop_z, work_pitch, cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
-pause(0.5);
+pause(0.25);
 
 fprintf('    [place] Open gripper...\n');
 hw.openGripper();
-pause(1.0);
+pause(0.5);
 
 fprintf('    [place] Retract (z=%.1f, pitch %.0f)...\n', approach_z, transit_pitch);
 hw.moveToPose(act_x, act_y, approach_z, transit_pitch, cfg.MOVE_TIME, cfg.MOTION_MODE, cfg.Z_FLOOR);
-pause(0.3);
+pause(0.15);
 
 end
