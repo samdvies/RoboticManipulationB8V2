@@ -1,4 +1,4 @@
-﻿%% bridge_pick.m
+%% bridge_pick.m
 % Bridge pick hardware script (MATLAB mirror of Python implementation).
 %
 % Mirrors:

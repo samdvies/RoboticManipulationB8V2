@@ -10,6 +10,9 @@ function bridgePickCube(hw, cube_xy, cfg)
 %   cfg     - config struct from task_config()
 
 PITCH_BRIDGE = 0;
+BRIDGE_MOVE_TIME = 2.5;
+Z_FLOOR = 10;
+MODE_EXEC = 1;
 
 % Bridge geometry (match master bridge_pick / BridgeAvoidance)
 BRIDGE_HALF_WIDTH_X = 5.0;
@@ -30,22 +33,25 @@ bridge_zone = OpenManipulator.BridgeAvoidance.NewZone( ...
     BRIDGE_X_MIN, BRIDGE_X_MAX, BRIDGE_Y_MIN, BRIDGE_Y_MAX, BRIDGE_Z_MIN, BRIDGE_Z_MAX);
 bridge_zones = OpenManipulator.BridgeAvoidance.BuildBridgeZones(bridge_zone, BRIDGE_GAP_Y, 10.0, 10.0);
 
-% Start from current pose (planner has us at HOME before bridge_pick)
-q_current = hw.readAngles();
-[T_current, ~] = OpenManipulator.FK(q_current);
-start_pos = T_current(1:3, 4)';
-start_pitch = -(q_current(2) + q_current(3) + q_current(4));
-home_pose = [start_pos(1), start_pos(2), start_pos(3), start_pitch];
+% Fixed bridge-safe start pose at pitch 0 (matches working bridge_pick.m)
+home_pose = [200, 0, 180, 0];
+
+% Move to bridge start pose before planning entry
+fprintf('    [bridge-pick] Moving to bridge start pose [200, 0, 180, 0]...\n');
+hw.moveToPose(home_pose(1), home_pose(2), home_pose(3), home_pose(4), ...
+    BRIDGE_MOVE_TIME, MODE_EXEC, Z_FLOOR);
+pause(0.5);
+
+% Set jaw to 50% for bridge clearance (fully open may collide)
+fprintf('    [bridge-pick] Setting jaw to 50%% for bridge clearance...\n');
+hw.setGripperPosition(50);
+pause(0.8);
 
 cube_x = cube_xy(1);
 cube_y = cube_xy(2);
-pick_z = cfg.CUBE_Z_SURFACE + cfg.CUBE_SIZE / 2;
+pick_z = cfg.CUBE_Z_SURFACE + cfg.CUBE_SIZE / 2 + cfg.PICK_Z_OFFSET_MM;
 pick_pose = [cube_x, cube_y, pick_z, PITCH_BRIDGE];
 lift_after_pick_pose = [cube_x, cube_y, pick_z + cfg.PICK_LIFT_MM, PITCH_BRIDGE];
-
-% Exit target: approach position at travel height (clear bridge, ready for place)
-approach_x = bridge_center_x - cfg.BRIDGE_APPROACH_OFFSET;
-exit_target_pose = [approach_x, cube_y, cfg.PLACE_APPROACH_Z, PITCH_BRIDGE];
 
 planner_opts = struct('pitch_tolerance_deg', 5.0, ...
     'vertical_clearance_mm', 30.0, ...
@@ -57,12 +63,9 @@ planner_opts = struct('pitch_tolerance_deg', 5.0, ...
 wp_entry = OpenManipulator.BridgeAvoidance.PlanBridgeSafeWaypoints( ...
     home_pose, pick_pose, bridge_zone, bridge_zones, planner_opts);
 wp_exit = OpenManipulator.BridgeAvoidance.PlanBridgeSafeWaypoints( ...
-    lift_after_pick_pose, exit_target_pose, bridge_zone, bridge_zones, planner_opts);
+    lift_after_pick_pose, home_pose, bridge_zone, bridge_zones, planner_opts);
 
 USE_DYNAMIC_PITCH = false;
-MOVE_TIME = cfg.MOVE_TIME;
-Z_FLOOR = cfg.Z_FLOOR;
-MODE_EXEC = cfg.MOTION_MODE;
 
 fprintf('    [bridge-pick] Entry waypoints: %d\n', size(wp_entry, 1));
 fprintf('    [bridge-pick] Exit waypoints:  %d\n', size(wp_exit, 1));
@@ -78,14 +81,14 @@ for i = 1:size(wp_entry, 1)
         i, size(wp_entry, 1), wp(1), wp(2), wp(3), wp(4));
     exec_mode_wp = MODE_EXEC;
     if i == size(wp_entry, 1)
-        exec_mode_wp = 2;  % Task-space linear for final approach
+        exec_mode_wp = 2;
     end
-    hw.moveToPose(wp(1), wp(2), wp(3), wp(4), MOVE_TIME, exec_mode_wp, Z_FLOOR, entry_ctx);
+    hw.moveToPose(wp(1), wp(2), wp(3), wp(4), BRIDGE_MOVE_TIME, exec_mode_wp, Z_FLOOR, entry_ctx);
     pause(0.3);
 end
 % Final lock at exact pick pose
 hw.moveToPose(pick_pose(1), pick_pose(2), pick_pose(3), pick_pose(4), ...
-    max(0.8, 0.5 * MOVE_TIME), 1, Z_FLOOR, entry_ctx);
+    max(0.8, 0.5 * BRIDGE_MOVE_TIME), 1, Z_FLOOR, entry_ctx);
 pause(0.2);
 
 fprintf('    [bridge-pick] Close gripper...\n');
@@ -98,10 +101,10 @@ lift_ctx = struct('zones', bridge_zones, ...
     'preplanned_route', true, ...
     'dynamic_pitch', USE_DYNAMIC_PITCH);
 hw.moveToPose(lift_after_pick_pose(1), lift_after_pick_pose(2), lift_after_pick_pose(3), lift_after_pick_pose(4), ...
-    MOVE_TIME, MODE_EXEC, Z_FLOOR, lift_ctx);
+    BRIDGE_MOVE_TIME, MODE_EXEC, Z_FLOOR, lift_ctx);
 pause(0.3);
 
-% --- Phase 3: Exit route to travel height ---
+% --- Phase 3: Exit route back to bridge start pose ---
 exit_ctx = struct('zones', bridge_zones, ...
     'final_target_pose', wp_exit(end, :), ...
     'preplanned_route', true, ...
@@ -110,7 +113,7 @@ for i = 1:size(wp_exit, 1)
     wp = wp_exit(i, :);
     fprintf('    [bridge-pick] Exit %d/%d -> [%.1f, %.1f, %.1f, %.1f]\n', ...
         i, size(wp_exit, 1), wp(1), wp(2), wp(3), wp(4));
-    hw.moveToPose(wp(1), wp(2), wp(3), wp(4), MOVE_TIME, MODE_EXEC, Z_FLOOR, exit_ctx);
+    hw.moveToPose(wp(1), wp(2), wp(3), wp(4), BRIDGE_MOVE_TIME, MODE_EXEC, Z_FLOOR, exit_ctx);
     pause(0.3);
 end
 
