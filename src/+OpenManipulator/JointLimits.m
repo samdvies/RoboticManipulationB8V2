@@ -2,17 +2,17 @@ classdef JointLimits
 %JOINTLIMITS Joint limits for safe operation of OpenManipulator-X
 %   Centralised joint limit definitions and clamping utilities.
 %
-%   Joint 1 (Base):     ±90°  — Front half-plane (matching master)
-%   Joints 2–4:        ±117° — Conservative limits for reliable servo tracking
+%   Joint 1 (Base):     +/-225 deg - relaxed base rotation range
+%   Joints 2-4:        +/-117 deg - conservative limits for reliable servo tracking
 %
     methods (Static)
 
         function limits = GetLimits()
         %GETLIMITS Returns 4x2 matrix [min, max] in degrees
-            limits = [-90,  90;
-                     -117, 117;
-                     -117, 117;
-                     -117, 117];
+            limits = [-225, 225;
+                      -117, 117;
+                      -117, 117;
+                      -117, 117];
         end
 
         function names = GetNames()
@@ -41,14 +41,14 @@ classdef JointLimits
                     q_clamped(i) = limits(i, 1);
                     was_clamped(i) = true;
                     if warn
-                        fprintf('Warning: Joint %d (%s) clamped: %.1f° -> %.1f° (limit: [%.0f°, %.0f°])\n', ...
+                        fprintf('Warning: Joint %d (%s) clamped: %.1f deg -> %.1f deg (limit: [%.0f deg, %.0f deg])\n', ...
                             i, names{i}, q(i), q_clamped(i), limits(i, 1), limits(i, 2));
                     end
                 elseif q(i) > limits(i, 2)
                     q_clamped(i) = limits(i, 2);
                     was_clamped(i) = true;
                     if warn
-                        fprintf('Warning: Joint %d (%s) clamped: %.1f° -> %.1f° (limit: [%.0f°, %.0f°])\n', ...
+                        fprintf('Warning: Joint %d (%s) clamped: %.1f deg -> %.1f deg (limit: [%.0f deg, %.0f deg])\n', ...
                             i, names{i}, q(i), q_clamped(i), limits(i, 1), limits(i, 2));
                     end
                 end

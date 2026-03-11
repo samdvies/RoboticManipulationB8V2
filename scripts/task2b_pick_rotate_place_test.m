@@ -28,7 +28,7 @@ MOTION_MODE = 1;
 % =========================================================================
 %  HARDCODED OFFSETS (no tuning loop)
 % =========================================================================
-PICK_OFFSET_X  = 5;              % pick X offset (mm), e.g. easier drop
+PICK_OFFSET_X  = 0;              % pick X offset (mm), 0 = nominal pick position
 PLACE_OFFSET_MAGNITUDE = sqrt(32); % place offset magnitude (mm); direction = toward origin from place
 
 % =========================================================================

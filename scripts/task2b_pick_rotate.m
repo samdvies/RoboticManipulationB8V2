@@ -58,7 +58,7 @@ OFFSET_Z_NEG90 = 0;
 % =========================================================================
 PICK_X         = 200;   % pick centre X  (mm, user frame)
 PICK_Y         =   0;   % pick centre Y  (mm, user frame)
-PICK_OFFSET_X  = 5;     % offset applied to pick X only (e.g. 5 = further forward for easier drop)
+PICK_OFFSET_X  = 0;     % offset applied to pick X only (0 = nominal pick position)
 PLACE_X        = 175;   % place centre X (mm, user frame)
 PLACE_Y        = 175;   % place centre Y (mm, user frame)
 CUBE_Z_SURFACE = 32.5; % Z of table surface (mm); pick/place height = 32.5 + 12.5 = 45 mm

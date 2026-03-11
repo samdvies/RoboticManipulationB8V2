@@ -476,7 +476,7 @@ classdef HardwareInterface < handle
                 dt = 0.05;
             else
                 log_verify_pose = true; % Log readAngles+FK (VERIFY START, during segment, VERIFY END). Segment-end jump is from waitForMotion() gap + pause(0.1), not from verify log.
-                dt = 0.02;             % 50 Hz (was 0.05). Higher rate = smoother motion for Mode 2/3.
+                dt = 0.05;             % 20 Hz — reduces whirring/resonance vs 50 Hz
             end
 
             % Current state (fresh for each segment)

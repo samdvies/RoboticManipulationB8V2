@@ -45,7 +45,8 @@ function [q, success, info] = inverseKinematics(target_pos, target_orientation, 
         -1.57,  1.53;   % Joint 3 (Elbow): -90° to +87°
         -1.80,  2.00    % Joint 4 (Wrist): -103° to +114°
     ];
-    
+    LIMITS(1, :) = [-5*pi/4, 5*pi/4];
+
     %% Handle Optional Arguments
     if nargin < 2 || isempty(target_orientation)
         target_orientation = 'horizontal';

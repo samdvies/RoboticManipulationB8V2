@@ -1,4 +1,4 @@
-function pickCube(hw, cube_xy, for_rotation, pickup_angle_deg, cfg)
+function pickCube(hw, cube_xy, for_rotation, pickup_angle_deg, cfg, cube_index)
 % PICKCUBE  Standard pick: approach, descend, grip, lift.
 % Transit moves use TRANSIT_PITCH (e.g. -45) so the arm stays within reach
 % at high Z.  Pitch -90 is used only at low Z for the actual grip.
@@ -7,18 +7,32 @@ function pickCube(hw, cube_xy, for_rotation, pickup_angle_deg, cfg)
 %   hw              - OpenManipulator.HardwareInterface instance
 %   cube_xy         - [x, y] position of cube (mm)
 %   for_rotation    - logical (kept for compatibility; offset is by angle)
-%   pickup_angle_deg - inferred pick bearing (0, 22.5, or 45); selects [radial, tangential] offset from cfg
+%   pickup_angle_deg - inferred pick bearing (0, 22.5, or 45); selects offset when per-cube not used
 %   cfg             - config struct from task_config()
+%   cube_index     - (optional) when provided and cfg.cube_pick_offsets exists, use that row for [radial, tangential]
+
+if nargin < 6, cube_index = []; end
 
 pick_x = cube_xy(1);
 pick_y = cube_xy(2);
-if for_rotation
-    if abs(pickup_angle_deg - 0) < 1
-        off = cfg.PICK_OFFSET_0;
-    elseif abs(pickup_angle_deg - 22.5) < 1
-        off = cfg.PICK_OFFSET_22_5;
-    elseif abs(pickup_angle_deg - 45) < 1
-        off = cfg.PICK_OFFSET_45;
+
+% Per-cube pick offset (Task 2a) overrides angle-based when present
+use_per_cube = ~isempty(cube_index) && isfield(cfg, 'cube_pick_offsets') && ...
+    cube_index >= 1 && cube_index <= size(cfg.cube_pick_offsets, 1);
+
+if use_per_cube
+    off = cfg.cube_pick_offsets(cube_index, :);
+elseif for_rotation
+    if isfield(cfg, 'PICK_OFFSET_0')
+        if abs(pickup_angle_deg - 0) < 1
+            off = cfg.PICK_OFFSET_0;
+        elseif abs(pickup_angle_deg - 22.5) < 1
+            off = cfg.PICK_OFFSET_22_5;
+        elseif abs(pickup_angle_deg - 45) < 1
+            off = cfg.PICK_OFFSET_45;
+        else
+            off = [0, 0];
+        end
     else
         off = [0, 0];
     end

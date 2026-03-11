@@ -1,15 +1,14 @@
-
 import numpy as np
 
-# Joint limits in DEGREES for OpenManipulator-X (4 joints)
-# Joint 1 (Base):     ±120° — Extended to reach behind front half-plane
-# Joint 2 (Shoulder): ±117° — Conservative safe default
-# Joint 3 (Elbow):    ±117° — Conservative safe default
-# Joint 4 (Wrist):    ±117° — Conservative safe default
+# Joint limits in degrees for OpenManipulator-X (4 joints)
+# Joint 1 (Base):     +/-225 deg - relaxed base rotation range
+# Joint 2 (Shoulder): +/-117 deg - conservative safe default
+# Joint 3 (Elbow):    +/-117 deg - conservative safe default
+# Joint 4 (Wrist):    +/-117 deg - conservative safe default
 
 JOINT_LIMITS = {
-    'min': np.array([-120.0, -117.0, -117.0, -117.0]),
-    'max': np.array([ 120.0,  117.0,  117.0,  117.0]),
+    'min': np.array([-225.0, -117.0, -117.0, -117.0]),
+    'max': np.array([225.0, 117.0, 117.0, 117.0]),
 }
 
 JOINT_NAMES = ['Base', 'Shoulder', 'Elbow', 'Wrist']
@@ -41,9 +40,11 @@ def clamp_joints(q):
 
     for i in range(len(q)):
         if was_clamped[i]:
-            print(f"Warning: Joint {i+1} ({JOINT_NAMES[i]}) clamped: "
-                  f"{q[i]:.1f}° -> {q_clamped[i]:.1f}° "
-                  f"(limit: [{JOINT_LIMITS['min'][i]:.0f}°, {JOINT_LIMITS['max'][i]:.0f}°])")
+            print(
+                f"Warning: Joint {i + 1} ({JOINT_NAMES[i]}) clamped: "
+                f"{q[i]:.1f} deg -> {q_clamped[i]:.1f} deg "
+                f"(limit: [{JOINT_LIMITS['min'][i]:.0f} deg, {JOINT_LIMITS['max'][i]:.0f} deg])"
+            )
 
     return q_clamped.tolist(), was_clamped.tolist()
 
