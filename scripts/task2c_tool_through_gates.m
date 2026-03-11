@@ -41,6 +41,8 @@ FLY_Z         = 110;              % Z when flying between locations (higher = cl
 GATE_Z        = 70;              % (unused) gate Z now varies by segment
 BRIDGE_Z_LOW  = 105;             % Pickup height; hold for first and last bridge segments
 BRIDGE_Z_HIGH = 130;             % +25 mm for central two bridges only
+BRIDGE_Z_LOW_REDUCED  = BRIDGE_Z_LOW - 10;   % Lower first bridge by 10 mm
+BRIDGE_Z_HIGH_REDUCED = BRIDGE_Z_HIGH - 10;  % Lower third/final bridges by 10 mm
 
 % Gate waypoints — bridge 1, bridge 2 to (225,0), then straight to (175,0), then to drop approach
 GATE_WAYPOINTS = [
@@ -101,8 +103,8 @@ waypoints(end+1, :) = [GATE_WAYPOINTS(1,:), SAFE_Z, PITCH];
 phase_labels(end+1) = 5;
 
 % 6–7. Traverse gates: segment 1 single move; segment 2 (100,-75)->(225,0) kept with intermediates for pitch tuning
-% Segment 1: wp1 -> wp2 at BRIDGE_Z_LOW (one waypoint = one smooth straight line)
-waypoints(end+1, :) = [GATE_WAYPOINTS(2,:), BRIDGE_Z_LOW, PITCH];
+% Segment 1: wp1 -> wp2 lowered by 10 mm
+waypoints(end+1, :) = [GATE_WAYPOINTS(2,:), BRIDGE_Z_LOW_REDUCED, PITCH];
 phase_labels(end+1) = 7;
 % Lift for central two bridges
 waypoints(end+1, :) = [GATE_WAYPOINTS(2,:), BRIDGE_Z_HIGH, PITCH];
@@ -110,11 +112,13 @@ phase_labels(end+1) = 13;
 % Segment 2: wp2 -> wp3 at BRIDGE_Z_HIGH — UNCHANGED (appendManhattanXY + PITCH_BRIDGE2)
 [waypoints, phase_labels] = appendManhattanXY( ...
     waypoints, phase_labels, GATE_WAYPOINTS(2,:), GATE_WAYPOINTS(3,:), BRIDGE_Z_HIGH, PITCH_BRIDGE2, 7);
-% Segment 3: wp3 -> wp4 straight (225,0) -> (175,0) at BRIDGE_Z_HIGH (one waypoint, third bridge pitch)
-waypoints(end+1, :) = [GATE_WAYPOINTS(4,:), BRIDGE_Z_HIGH, PITCH_BRIDGE3];
+% Segment 3: wp3 -> shifted wp4 straight (225,0) -> (171,0) at BRIDGE_Z_HIGH
+waypoints(end+1, :) = [171, 0, BRIDGE_Z_HIGH_REDUCED, PITCH_BRIDGE3];
 phase_labels(end+1) = 7;
-% Segment 4: wp4 -> wp5 at BRIDGE_Z_HIGH (one waypoint)
-waypoints(end+1, :) = [GATE_WAYPOINTS(5,:), BRIDGE_Z_HIGH, PITCH];
+% Segment 4: keep the full vertical path offset by -4 mm in X
+waypoints(end+1, :) = [171, 50, BRIDGE_Z_HIGH_REDUCED, PITCH];
+waypoints(end+1, :) = [171, 100, BRIDGE_Z_HIGH_REDUCED, PITCH];
+phase_labels(end+1) = 7;
 phase_labels(end+1) = 7;
 
 % 8. Lift after gates
@@ -122,7 +126,7 @@ waypoints(end+1, :) = [GATE_WAYPOINTS(end,:), FLY_Z, PITCH];
 phase_labels(end+1) = 8;
 
 % 9. Fly to above drop zone
-waypoints(end+1, :) = [DROP_XY, FLY_Z, PITCH];
+waypoints(end+1, :) = [DROP_XY, FLY_Z - 10, PITCH];
 phase_labels(end+1) = 9;
 
 % 10. Lower to drop Z
