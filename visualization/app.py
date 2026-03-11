@@ -810,7 +810,6 @@ class MainWindow(QMainWindow):
                 np.array([tgt_x, tgt_y, 150.0, 0.0]),          # Move over target cup at safe Z
                 np.array([tgt_x, tgt_y, 130.0, 0.0]),          # Lower over target cup (still above 100mm)
                 np.array([tgt_x, tgt_y, 130.0, -60.0]),        # Start pour
-                np.array([tgt_x, tgt_y, 130.0, -70.0]),        # Full pour
                 # Upright and lift back up
                 np.array([tgt_x, tgt_y, 150.0, 0.0]),          # Lift and return pitch to 0
                 # Return to original cup position
@@ -842,8 +841,7 @@ class MainWindow(QMainWindow):
         src_x, src_y, src_z = 200.0, 0.0, 60.0
         # Start roughly at 150, 150, 100 and move up/out to about 200, 200, 150
         mouth_start = np.array([150.0, 150.0, 100.0, 0.0])
-        mouth_mid   = np.array([175.0, 175.0, 125.0, -40.0])
-        mouth_end   = np.array([200.0, 200.0, 150.0, -70.0])
+        mouth_mid   = np.array([175.0, 175.0, 125.0, -60.0])
 
         # Phase 1: approach and pick the second cup
         approach_poses = [
@@ -864,9 +862,7 @@ class MainWindow(QMainWindow):
             # Three "sip" cycles: follow an arc toward the mouth while rotating,
             # then come back to the start pose.
             for _ in range(3):
-                poses.append(mouth_mid.copy())                          # Halfway: slight tilt
-                poses.append(mouth_end.copy())                          # Full tilt near mouth
-                poses.append(mouth_mid.copy())                          # Back along arc
+                poses.append(mouth_mid.copy())                          # Halfway tilt
                 poses.append(mouth_start.copy())                        # Upright at start
 
             self._start_sequence(poses)

@@ -77,8 +77,8 @@ try
         cup1_x, cup1_y, hover_z1, 0;             % lift
         cup2_x, cup2_y, hover_z1, 0;             % above second cup
         cup2_x, cup2_y, cup2_z_pour, 0;          % lower a bit
-        cup2_x, cup2_y, cup2_z_pour, -60;        % start pour
-        cup2_x, cup2_y, cup2_z_pour, -70;        % full pour
+        cup2_x, cup2_y, hover_z1, 0;          % lower a bit
+        cup2_x, cup2_y, hover_z1, -60;    % start pour
         cup2_x, cup2_y, hover_z1, 0;             % upright and lift
         cup1_x, cup1_y, hover_z1, 0;             % back above first cup
         cup1_x, cup1_y, cup1_z,   0;             % back to original height
@@ -181,7 +181,7 @@ try
 
     % "Mouth" arc poses (X, Y, Z, Pitch)
     mouth_start = [150, 150, 100,   0];
-    mouth_mid   = [175, 175, 125, -40];
+    mouth_mid   = [175, 175, 125, -60];
     mouth_end   = [200, 200, 150, -70];
 
     % Approach and pick second cup
