@@ -54,7 +54,7 @@ try
     fprintf('\n=== Demo 1: Cup Pour 1 ===\n');
 
     cup1_x = 75;   cup1_y = -175; cup1_z = 60;
-    cup2_x = 125;  cup2_y = 0;    cup2_z_pour = 130;
+    cup2_x = 160;  cup2_y = 0;    cup2_z_pour = 130;
     hover_z1 = 150;
 
     % Approach first cup with gripper open
@@ -141,14 +141,16 @@ try
     ];
 
     fprintf('[D2] Running stirring path...\n');
+    STIR_MOVE_TIME = 0.1;   % ~5x faster than normal MOVE_TIME
+    STIR_PAUSE     = 0.02;
     for lap = 1:4
         for k = 1:size(path_points,1)
             px = path_points(k,1);
             py = path_points(k,2);
             pz = path_points(k,3);
             hw.moveToPose(px, py, pz, 0, ...
-                          MOVE_TIME, MOTION_MODE, Z_FLOOR);
-            pause(PAUSE_SHORT);
+                          STIR_MOVE_TIME, MOTION_MODE, Z_FLOOR);
+            pause(STIR_PAUSE);
         end
     end
 
@@ -180,7 +182,7 @@ try
 
     % "Mouth" arc poses (X, Y, Z, Pitch)
     mouth_start = [150, 150, 100,   0];
-    mouth_mid   = [175, 175, 125, -60];
+    mouth_end   = [175, 175, 125, -60];
 
     % Approach and pick second cup
     hw.openGripper(); pause(PAUSE_SHORT);
@@ -206,10 +208,28 @@ try
     fprintf('[D3] Performing mouth pour cycles...\n');
     for cycle = 1:3
         move_seq(hw, [
-            mouth_mid(1),  mouth_mid(2),  mouth_mid(3),  mouth_mid(4);
+            mouth_end(1),  mouth_end(2),  mouth_end(3),  mouth_end(4);
             mouth_start(1), mouth_start(2), mouth_start(3), mouth_start(4);
         ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     end
+
+    % Return cup 2 to its original pickup position
+    fprintf('[D3] Returning second cup...\n');
+    move_seq(hw, [
+        cup2_x, cup2_y, hover2_z, 0;
+        cup2_x, cup2_y, cup2_z,   0;
+    ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
+    pause(PAUSE_MED);
+
+    % Release second cup
+    hw.openGripper();
+    pause(0.26);
+
+    % Lift away
+    move_seq(hw, [
+        cup2_x, cup2_y, hover2_z, 0;
+    ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
+    pause(PAUSE_MED);
 
     % Finish by returning to home
     fprintf('\n[Done] Returning home...\n');

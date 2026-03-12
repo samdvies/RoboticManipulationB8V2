@@ -803,7 +803,7 @@ class MainWindow(QMainWindow):
             # Phase 2: carry to the target cup at (125, 0),
             # pour while staying above the receiving cup height (~100mm),
             # then return the cup to its original position.
-            tgt_x, tgt_y = 125.0, 0.0
+            tgt_x, tgt_y = 160.0, 0.0
             carry_pour_and_return_poses = [
                 # Carry to second cup
                 np.array([src_x, src_y, 150.0, 0.0]),          # Lift cup up vertically
@@ -841,7 +841,7 @@ class MainWindow(QMainWindow):
         src_x, src_y, src_z = 200.0, 0.0, 60.0
         # Start roughly at 150, 150, 100 and move up/out to about 200, 200, 150
         mouth_start = np.array([150.0, 150.0, 100.0, 0.0])
-        mouth_mid   = np.array([175.0, 175.0, 125.0, -60.0])
+        mouth_end   = np.array([175.0, 175.0, 125.0, -60.0])
 
         # Phase 1: approach and pick the second cup
         approach_poses = [
@@ -862,10 +862,17 @@ class MainWindow(QMainWindow):
             # Three "sip" cycles: follow an arc toward the mouth while rotating,
             # then come back to the start pose.
             for _ in range(3):
-                poses.append(mouth_mid.copy())                          # Halfway tilt
+                poses.append(mouth_end.copy())                          # Full tilt
                 poses.append(mouth_start.copy())                        # Upright at start
 
-            self._start_sequence(poses)
+            # Return cup 2 to its original pickup position
+            poses.append(np.array([src_x, src_y, 150.0, 0.0]))          # Above pickup
+            poses.append(np.array([src_x, src_y, src_z,  0.0]))         # At pickup height
+
+            def release_and_lift():
+                self.gripper_open()
+
+            self._start_sequence(poses, on_complete=release_and_lift)
 
         self._start_sequence(approach_poses, on_complete=after_second_pick)
 
