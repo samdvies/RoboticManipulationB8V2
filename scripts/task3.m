@@ -141,18 +141,22 @@ try
     ];
 
     fprintf('[D2] Running stirring path...\n');
-    STIR_MOVE_TIME = 0.1;   % ~5x faster than normal MOVE_TIME
-    STIR_PAUSE     = 0.02;
-    for lap = 1:4
-        for k = 1:size(path_points,1)
-            px = path_points(k,1);
-            py = path_points(k,2);
-            pz = path_points(k,3);
-            hw.moveToPose(px, py, pz, 0, ...
-                          STIR_MOVE_TIME, MOTION_MODE, Z_FLOOR);
-            pause(STIR_PAUSE);
-        end
-    end
+    stir_entry_pose = [path_points(1, 1), path_points(1, 2), path_points(1, 3), 0];
+    stir_waypoints = [path_points, zeros(size(path_points, 1), 1)];
+    stir_stream_path = [
+        stir_entry_pose;
+        repmat(stir_waypoints, 4, 1);
+        stir_waypoints(1, :)
+    ];
+    hw.movePosePath(stir_stream_path, struct( ...
+        'speed_mm_s', 120, ...
+        'rot_speed_deg_s', 90, ...
+        'dt', 0.02, ...
+        'z_floor_mm', Z_FLOOR, ...
+        'motion_mode', 2, ...
+        'smoothing', 'smoothstep', ...
+        'final_settle', true, ...
+        'verify_final', true));
 
     % Return stirrer to original pose
     move_seq(hw, [
@@ -262,12 +266,27 @@ end
 %  Helper: move through a sequence of [x y z pitch] rows
 % ========================================================================
 function move_seq(hw, waypoints, move_time, motion_mode, z_floor)
-for i = 1:size(waypoints, 1)
-    x = waypoints(i, 1);
-    y = waypoints(i, 2);
-    z = waypoints(i, 3);
-    p = waypoints(i, 4);
-    hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
+if isempty(waypoints)
+    return;
+end
+if motion_mode == 2
+    hw.movePosePath(waypoints, struct( ...
+        'speed_mm_s', 70, ...
+        'rot_speed_deg_s', 45, ...
+        'dt', 0.02, ...
+        'z_floor_mm', z_floor, ...
+        'motion_mode', motion_mode, ...
+        'smoothing', 'smoothstep', ...
+        'final_settle', true, ...
+        'verify_final', true));
+else
+    for i = 1:size(waypoints, 1)
+        x = waypoints(i, 1);
+        y = waypoints(i, 2);
+        z = waypoints(i, 3);
+        p = waypoints(i, 4);
+        hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
+    end
 end
 end
 

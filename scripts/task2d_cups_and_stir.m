@@ -3,6 +3,13 @@
 % Usage:
 %   run('scripts/task2d_cups_and_stir.m')
 %
+% COM debugging (if robot keeps stopping / suspected port drops):
+%   - Set DEBUG_COM_HEALTH_BETWEEN_DEMOS = true to run a port read check
+%     after each demo; failure points to when the port dropped.
+%   - Set DEBUG_COM_VERBOSE = true to log every Tx/Rx result (very noisy).
+%   - Watch for [COM] ... TxRx=... (non-zero = comm failure) or
+%     "waitForMotion still moving" / "Motion timeout" plus "COM HEALTH" result.
+%
 % This script mirrors the three scripted demos in the Python visualisation:
 %   1. Cup Pour 1: pick first cup at (75, -175, ~60) and pour into cup at
 %      (200, 0), then return the first cup to its original pose.
@@ -28,32 +35,48 @@ MOVE_TIME   = 0.5;      % seconds per waypoint move
 Z_FLOOR     = 15;       % safety floor – arm won't go below this Z (mm)
 MOTION_MODE = 2;        % 1=Joint, 2=Task Linear, 3=Jacobian Hybrid
 
+% Set to true to log every COM Tx/Rx result (very verbose) to trace port drops
+DEBUG_COM_VERBOSE = false;
+% Set to true to run a COM health check between each demo (helps find when port drops)
+DEBUG_COM_HEALTH_BETWEEN_DEMOS = true;
+
 HOME_POSE = [134, 0, 240, -45];  % [X Y Z Pitch]
 
 % General timing
 PAUSE_SHORT = 0.1;
 PAUSE_MED   = 0.16;
 
+% Script start time for phase logging (helps correlate "robot stopped" with COM errors)
+script_tic = tic;
+
 try
     % ── Connect ──────────────────────────────────────────────────────────
+    fprintf('[t=%.2f] Connecting to %s @ %d baud...\n', toc(script_tic), PORT, BAUD);
     hw = OpenManipulator.HardwareInterface(PORT, BAUD);
+    hw.COM_DEBUG = DEBUG_COM_VERBOSE;
+    if DEBUG_COM_VERBOSE
+        hw.startComTic();
+    end
+    fprintf('[t=%.2f] Configuring (velocity=%d)...\n', toc(script_tic), VELOCITY);
     hw.configure(VELOCITY);
     hw.enableTorque();
     hw.openGripper();
     pause(0.16);
+    fprintf('[t=%.2f] Ready. Starting sequence.\n', toc(script_tic));
 
     % ── Go Home ─────────────────────────────────────────────────────────
-    fprintf('[0] Moving to home...\n');
+    fprintf('[t=%.2f] Moving to home...\n', toc(script_tic));
     hw.moveToPose(HOME_POSE(1), HOME_POSE(2), HOME_POSE(3), HOME_POSE(4), ...
                   MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
+    fprintf('[t=%.2f] Home reached.\n', toc(script_tic));
 
     % ====================================================================
     %  DEMO 1: CUP POUR 1  (cup at 75,-175 -> pour into 200,0 -> return)
     % ====================================================================
-    fprintf('\n=== Demo 1: Cup Pour 1 ===\n');
+    fprintf('\n[t=%.2f] === Demo 1: Cup Pour 1 ===\n', toc(script_tic));
 
-    cup1_x = 75;   cup1_y = -175; cup1_z = 30;
+    cup1_x = 75;   cup1_y = -175; cup1_z = 40;
     cup1_place_entry_z = 80;
     cup1_place_z = 40;
     cup2_x = 110;  cup2_y = 0;    cup2_z_pour = 130;
@@ -71,7 +94,7 @@ try
 
     % Approach first cup with gripper open
     hw.openGripper(); pause(PAUSE_SHORT);
-    move_seq(hw, [
+    move_seq_pick(hw, [
         cup1_base_entry_xy(1), cup1_base_entry_xy(2), hover_z1, 0;   % go directly to inboard descent line
         cup1_base_entry_xy(1), cup1_base_entry_xy(2), 110,      -90; % start vertical descent
         cup1_base_entry_xy(1), cup1_base_entry_xy(2), 80,       -60; % pitch up during descent
@@ -88,7 +111,9 @@ try
 
     % Carry to second cup and pour, then return first cup
     move_seq(hw, [
-        cup1_x, cup1_y, hover_z1, 0;             % lift
+        cup1_x,              cup1_y,              55,       0;   % lift straight up first to avoid low-height wrist clamp
+        cup1_final_entry_xy(1), cup1_final_entry_xy(2), 55,     -30; % move inward once clear of cup wall
+        cup1_base_entry_xy(1), cup1_base_entry_xy(2), hover_z1, 0; % continue rising from inboard side
         cup2_x, cup2_y, hover_z1, 0;             % above second cup
         cup2_x, cup2_y, hover_z1, 0;        % lower a bit
         cup2_x, cup2_y, hover_z1, -80;    % start pour
@@ -110,11 +135,15 @@ try
         cup1_base_entry_xy(1), cup1_base_entry_xy(2), hover_z1, 0;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
+    if DEBUG_COM_HEALTH_BETWEEN_DEMOS
+        fprintf('[t=%.2f] COM health check (after Demo 1): ', toc(script_tic));
+        hw.checkComHealth(true);
+    end
 
     % ====================================================================
     %  DEMO 2: OBJECT PATH / STIRRING
     % ====================================================================
-    fprintf('\n=== Demo 2: Stirrer Path ===\n');
+    fprintf('\n[t=%.2f] === Demo 2: Stirrer Path ===\n', toc(script_tic));
 
     stir_src_x = 150;  stir_src_y = -150;  stir_src_z = 170;
     hover_stir = 240;
@@ -125,7 +154,7 @@ try
     hw.openGripper(); pause(PAUSE_SHORT);
 
     % Approach and pick stirrer
-    move_seq(hw, [
+    move_seq_pick(hw, [
         stir_src_x, stir_src_y, hover_stir, 0;
         stir_src_x, stir_src_y, stir_src_z, 0;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
@@ -164,7 +193,15 @@ try
         repmat(stir_waypoints, 4, 1);
         stir_waypoints(1, :)
     ];
-    stream_pose_path(hw, stir_stream_path, 120, 0.02, Z_FLOOR);
+    hw.movePosePath(stir_stream_path, struct( ...
+        'speed_mm_s', 120, ...
+        'rot_speed_deg_s', 90, ...
+        'dt', 0.02, ...
+        'z_floor_mm', Z_FLOOR, ...
+        'motion_mode', 2, ...
+        'smoothing', 'smoothstep', ...
+        'final_settle', true, ...
+        'verify_final', true));
 
     % Return stirrer to original pose
     move_seq(hw, [
@@ -183,17 +220,21 @@ try
         stir_src_x, stir_src_y, hover_stir, 0;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
+    if DEBUG_COM_HEALTH_BETWEEN_DEMOS
+        fprintf('[t=%.2f] COM health check (after Demo 2): ', toc(script_tic));
+        hw.checkComHealth(true);
+    end
 
     % ====================================================================
     %  DEMO 3: CUP POUR 2 (to "mouth" arc)
     % ====================================================================
-    fprintf('\n=== Demo 3: Cup Pour 2 (to mouth) ===\n');
+    fprintf('\n[t=%.2f] === Demo 3: Cup Pour 2 (to mouth) ===\n', toc(script_tic));
 
-    cup2_x = 200;  cup2_y = 0;   cup2_z = 40;
-    hover2_z = 150;
+    cup2_x = 200;  cup2_y = 0;   cup2_z = 50;
+    hover2_z = 175;
     cup2_base_approach_x = 120;
     cup2_mid_approach_x = 160;
-    cup2_place_z = 40;
+    cup2_place_z = 50;
     cup2_pitch_zero_x = 175;
 
     % "Mouth" arc poses (X, Y, Z, Pitch), shifted 50 mm inward along radius
@@ -212,10 +253,10 @@ try
 
     % Approach and pick second cup
     hw.openGripper(); pause(PAUSE_SHORT);
-    move_seq(hw, [
+    move_seq_cup2_contact(hw, [
         cup2_base_approach_x, cup2_y, hover2_z,  -45;
         cup2_mid_approach_x,  cup2_y, 100,       -20;
-        cup2_pitch_zero_x,    cup2_y, cup2_z,      0;
+        cup2_x,               cup2_y, 100,         0;
         cup2_x,               cup2_y, cup2_z,     0;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
@@ -226,7 +267,8 @@ try
     pause(0.26);
 
     % Move from pickup to mouth_start
-    move_seq(hw, [
+    move_seq_pour(hw, [
+        cup2_x,               cup2_y, hover2_z,   0;
         cup2_mid_approach_x,  cup2_y, 100,       -20;
         cup2_base_approach_x, cup2_y, hover2_z,  -45;
         mouth_start(1), mouth_start(2), mouth_start(3), mouth_start(4);
@@ -236,7 +278,7 @@ try
     % Three sip cycles along the arc and back
     fprintf('[D3] Performing mouth pour cycles...\n');
     for cycle = 1:3
-        move_seq(hw, [
+        move_seq_pour(hw, [
             mouth_end(1),  mouth_end(2),  mouth_end(3),  mouth_end(4);
             mouth_start(1), mouth_start(2), mouth_start(3), mouth_start(4);
         ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
@@ -244,10 +286,10 @@ try
 
     % Return cup 2 to its original pickup position
     fprintf('[D3] Returning second cup...\n');
-    move_seq(hw, [
+    move_seq_cup2_contact(hw, [
         cup2_base_approach_x, cup2_y, hover2_z,  -45;
         cup2_mid_approach_x,  cup2_y, 100,       -20;
-        cup2_pitch_zero_x,    cup2_y, cup2_place_z, 0;
+        cup2_x,               cup2_y, 100,          0;
         cup2_x,               cup2_y, cup2_place_z, 0;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
@@ -257,20 +299,21 @@ try
     pause(0.26);
 
     % Lift away
-    move_seq(hw, [
+    move_seq_cup2_contact(hw, [
+        cup2_x,               cup2_y, hover2_z,   0;
         cup2_mid_approach_x,  cup2_y, 100,       -20;
         cup2_base_approach_x, cup2_y, hover2_z,  -45;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
     % Finish by returning to home
-    fprintf('\n[Done] Returning home...\n');
+    fprintf('\n[t=%.2f] Returning home...\n', toc(script_tic));
     hw.moveToPose(HOME_POSE(1), HOME_POSE(2), HOME_POSE(3), HOME_POSE(4), ...
                   MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
     hw.disconnect();
-    fprintf('\n=== Task 2d complete ===\n');
+    fprintf('\n[t=%.2f] === Task 2d complete ===\n', toc(script_tic));
 
 catch ME
     fprintf('\nERROR: %s\n', ME.message);
@@ -294,63 +337,102 @@ end
 %  Helper: move through a sequence of [x y z pitch] rows
 % ========================================================================
 function move_seq(hw, waypoints, move_time, motion_mode, z_floor)
-for i = 1:size(waypoints, 1)
-    x = waypoints(i, 1);
-    y = waypoints(i, 2);
-    z = waypoints(i, 3);
-    p = waypoints(i, 4);
-    hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
-end
-end
-
-function stream_pose_path(hw, waypoints, speed_mm_s, dt, z_floor)
 if isempty(waypoints)
     return;
 end
-
-q_current = hw.readAngles();
-[T_current, ~] = OpenManipulator.FK(q_current);
-prev_pose = [T_current(1:3, 4)', -(q_current(2) + q_current(3) + q_current(4))];
-
-for i = 1:size(waypoints, 1)
-    target_pose = waypoints(i, :);
-    dist_lin = norm(target_pose(1:3) - prev_pose(1:3));
-    dist_rot = abs(target_pose(4) - prev_pose(4));
-    duration = max([dist_lin / max(speed_mm_s, 1e-6), dist_rot / 90.0, dt]);
-    num_steps = max(1, ceil(duration / dt));
-
-    for step = 1:num_steps
-        s = step / num_steps;
-        s_smooth = s * s * (3.0 - 2.0 * s);
-        pose = (1 - s_smooth) * prev_pose + s_smooth * target_pose;
-
-        if pose(3) < z_floor
-            error('Motion Safety Violation: Commanded Z (%.1f mm) < %.1f mm. Aborting.', pose(3), z_floor);
-        end
-
-        q_interp = OpenManipulator.IK(pose(1), pose(2), pose(3), pose(4));
-        [q_interp, ~] = OpenManipulator.JointLimits.Clamp(q_interp);
-        encoders = zeros(1, 4);
-        for joint_idx = 1:4
-            encoders(joint_idx) = OpenManipulator.HardwareInterface.deg2enc(q_interp(joint_idx));
-        end
-        hw.syncWritePositions(encoders);
-        pause(dt);
+if motion_mode == 2
+    hw.movePosePath(waypoints, struct( ...
+        'speed_mm_s', 70, ...
+        'rot_speed_deg_s', 45, ...
+        'dt', 0.02, ...
+        'z_floor_mm', z_floor, ...
+        'motion_mode', motion_mode, ...
+        'smoothing', 'smoothstep', ...
+        'final_settle', true, ...
+        'verify_final', true));
+else
+    for i = 1:size(waypoints, 1)
+        x = waypoints(i, 1);
+        y = waypoints(i, 2);
+        z = waypoints(i, 3);
+        p = waypoints(i, 4);
+        hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
     end
-
-    prev_pose = target_pose;
+end
 end
 
-q_final = OpenManipulator.IK(prev_pose(1), prev_pose(2), prev_pose(3), prev_pose(4));
-[q_final, ~] = OpenManipulator.JointLimits.Clamp(q_final);
-encoders = zeros(1, 4);
-for joint_idx = 1:4
-    encoders(joint_idx) = OpenManipulator.HardwareInterface.deg2enc(q_final(joint_idx));
+function move_seq_pick(hw, waypoints, move_time, motion_mode, z_floor)
+if isempty(waypoints)
+    return;
 end
-for tail = 1:5
-    hw.syncWritePositions(encoders);
-    pause(dt);
+if motion_mode == 2
+    hw.movePosePath(waypoints, struct( ...
+        'speed_mm_s', 45, ...
+        'rot_speed_deg_s', 35, ...
+        'dt', 0.02, ...
+        'z_floor_mm', z_floor, ...
+        'motion_mode', motion_mode, ...
+        'smoothing', 'smoothstep', ...
+        'final_settle', true, ...
+        'verify_final', true));
+else
+    for i = 1:size(waypoints, 1)
+        x = waypoints(i, 1);
+        y = waypoints(i, 2);
+        z = waypoints(i, 3);
+        p = waypoints(i, 4);
+        hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
+    end
 end
-hw.waitForMotion();
+end
+
+function move_seq_pour(hw, waypoints, move_time, motion_mode, z_floor)
+if isempty(waypoints)
+    return;
+end
+if motion_mode == 2
+    hw.movePosePath(waypoints, struct( ...
+        'speed_mm_s', 23, ...
+        'rot_speed_deg_s', 15, ...
+        'dt', 0.02, ...
+        'z_floor_mm', z_floor, ...
+        'motion_mode', motion_mode, ...
+        'smoothing', 'smoothstep', ...
+        'final_settle', true, ...
+        'verify_final', true));
+else
+    for i = 1:size(waypoints, 1)
+        x = waypoints(i, 1);
+        y = waypoints(i, 2);
+        z = waypoints(i, 3);
+        p = waypoints(i, 4);
+        hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
+    end
+end
+end
+
+function move_seq_cup2_contact(hw, waypoints, move_time, motion_mode, z_floor)
+if isempty(waypoints)
+    return;
+end
+if motion_mode == 2
+    hw.movePosePath(waypoints, struct( ...
+        'speed_mm_s', 15, ...
+        'rot_speed_deg_s', 12, ...
+        'dt', 0.02, ...
+        'z_floor_mm', z_floor, ...
+        'motion_mode', motion_mode, ...
+        'smoothing', 'smoothstep', ...
+        'final_settle', true, ...
+        'verify_final', true));
+else
+    for i = 1:size(waypoints, 1)
+        x = waypoints(i, 1);
+        y = waypoints(i, 2);
+        z = waypoints(i, 3);
+        p = waypoints(i, 4);
+        hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
+    end
+end
 end
 
