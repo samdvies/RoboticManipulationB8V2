@@ -3,13 +3,6 @@
 % Usage:
 %   run('scripts/task2d_cups_and_stir.m')
 %
-% COM debugging (if robot keeps stopping / suspected port drops):
-%   - Set DEBUG_COM_HEALTH_BETWEEN_DEMOS = true to run a port read check
-%     after each demo; failure points to when the port dropped.
-%   - Set DEBUG_COM_VERBOSE = true to log every Tx/Rx result (very noisy).
-%   - Watch for [COM] ... TxRx=... (non-zero = comm failure) or
-%     "waitForMotion still moving" / "Motion timeout" plus "COM HEALTH" result.
-%
 % This script mirrors the three scripted demos in the Python visualisation:
 %   1. Cup Pour 1: pick first cup at (75, -175, ~60) and pour into cup at
 %      (200, 0), then return the first cup to its original pose.
@@ -35,46 +28,30 @@ MOVE_TIME   = 0.5;      % seconds per waypoint move
 Z_FLOOR     = 15;       % safety floor – arm won't go below this Z (mm)
 MOTION_MODE = 2;        % 1=Joint, 2=Task Linear, 3=Jacobian Hybrid
 
-% Set to true to log every COM Tx/Rx result (very verbose) to trace port drops
-DEBUG_COM_VERBOSE = false;
-% Set to true to run a COM health check between each demo (helps find when port drops)
-DEBUG_COM_HEALTH_BETWEEN_DEMOS = true;
-
 HOME_POSE = [134, 0, 240, -45];  % [X Y Z Pitch]
 
 % General timing
 PAUSE_SHORT = 0.1;
 PAUSE_MED   = 0.16;
 
-% Script start time for phase logging (helps correlate "robot stopped" with COM errors)
-script_tic = tic;
-
 try
     % ── Connect ──────────────────────────────────────────────────────────
-    fprintf('[t=%.2f] Connecting to %s @ %d baud...\n', toc(script_tic), PORT, BAUD);
     hw = OpenManipulator.HardwareInterface(PORT, BAUD);
-    hw.COM_DEBUG = DEBUG_COM_VERBOSE;
-    if DEBUG_COM_VERBOSE
-        hw.startComTic();
-    end
-    fprintf('[t=%.2f] Configuring (velocity=%d)...\n', toc(script_tic), VELOCITY);
     hw.configure(VELOCITY);
     hw.enableTorque();
     hw.openGripper();
     pause(0.16);
-    fprintf('[t=%.2f] Ready. Starting sequence.\n', toc(script_tic));
 
     % ── Go Home ─────────────────────────────────────────────────────────
-    fprintf('[t=%.2f] Moving to home...\n', toc(script_tic));
+    fprintf('[0] Moving to home...\n');
     hw.moveToPose(HOME_POSE(1), HOME_POSE(2), HOME_POSE(3), HOME_POSE(4), ...
                   MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
-    fprintf('[t=%.2f] Home reached.\n', toc(script_tic));
 
     % ====================================================================
     %  DEMO 1: CUP POUR 1  (cup at 75,-175 -> pour into 200,0 -> return)
     % ====================================================================
-    fprintf('\n[t=%.2f] === Demo 1: Cup Pour 1 ===\n', toc(script_tic));
+    fprintf('\n=== Demo 1: Cup Pour 1 ===\n');
 
     cup1_x = 75;   cup1_y = -175; cup1_z = 40;
     cup1_place_entry_z = 80;
@@ -135,15 +112,11 @@ try
         cup1_base_entry_xy(1), cup1_base_entry_xy(2), hover_z1, 0;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
-    if DEBUG_COM_HEALTH_BETWEEN_DEMOS
-        fprintf('[t=%.2f] COM health check (after Demo 1): ', toc(script_tic));
-        hw.checkComHealth(true);
-    end
 
     % ====================================================================
     %  DEMO 2: OBJECT PATH / STIRRING
     % ====================================================================
-    fprintf('\n[t=%.2f] === Demo 2: Stirrer Path ===\n', toc(script_tic));
+    fprintf('\n=== Demo 2: Stirrer Path ===\n');
 
     stir_src_x = 150;  stir_src_y = -150;  stir_src_z = 170;
     hover_stir = 240;
@@ -220,15 +193,11 @@ try
         stir_src_x, stir_src_y, hover_stir, 0;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
-    if DEBUG_COM_HEALTH_BETWEEN_DEMOS
-        fprintf('[t=%.2f] COM health check (after Demo 2): ', toc(script_tic));
-        hw.checkComHealth(true);
-    end
 
     % ====================================================================
     %  DEMO 3: CUP POUR 2 (to "mouth" arc)
     % ====================================================================
-    fprintf('\n[t=%.2f] === Demo 3: Cup Pour 2 (to mouth) ===\n', toc(script_tic));
+    fprintf('\n=== Demo 3: Cup Pour 2 (to mouth) ===\n');
 
     cup2_x = 200;  cup2_y = 0;   cup2_z = 50;
     hover2_z = 175;
@@ -307,13 +276,13 @@ try
     pause(PAUSE_MED);
 
     % Finish by returning to home
-    fprintf('\n[t=%.2f] Returning home...\n', toc(script_tic));
+    fprintf('\n[Done] Returning home...\n');
     hw.moveToPose(HOME_POSE(1), HOME_POSE(2), HOME_POSE(3), HOME_POSE(4), ...
                   MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
     hw.disconnect();
-    fprintf('\n[t=%.2f] === Task 2d complete ===\n', toc(script_tic));
+    fprintf('\n=== Task 2d complete ===\n');
 
 catch ME
     fprintf('\nERROR: %s\n', ME.message);
