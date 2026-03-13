@@ -53,16 +53,30 @@ try
     % ====================================================================
     fprintf('\n=== Demo 1: Cup Pour 1 ===\n');
 
-    cup1_x = 75;   cup1_y = -175; cup1_z = 60; 
-    cup2_x = 160;  cup2_y = 0;    cup2_z_pour = 130;
-    hover_z1 = 150; 
+    cup1_x = 75;   cup1_y = -175; cup1_z = 30;
+    cup1_place_entry_z = 80;
+    cup1_place_z = 40;
+    cup2_x = 110;  cup2_y = 0;    cup2_z_pour = 130;
+    hover_z1 = 150;
+    cup1_base_descent_radius = 70;  % descend farther inboard, away from the cup wall
+    cup1_final_radius = 43;         % keep the final approach closer to the robot base
+
+    % Approach the first cup from the base side. Descend inboard first,
+    % begin pitching up during the descent, then finish with a short
+    % diagonal approach into the exact grip pose at the configured pick height.
+    cup1_radial = [cup1_x, cup1_y];
+    cup1_radial = cup1_radial / norm(cup1_radial);
+    cup1_base_entry_xy = [cup1_x, cup1_y] - cup1_base_descent_radius * cup1_radial;
+    cup1_final_entry_xy = [cup1_x, cup1_y] - cup1_final_radius * cup1_radial;
 
     % Approach first cup with gripper open
     hw.openGripper(); pause(PAUSE_SHORT);
     move_seq(hw, [
-        cup1_x, cup1_y, hover_z1, 0;      % above cup
-        cup1_x, cup1_y, 100,      0;      % just above rim
-        cup1_x, cup1_y, cup1_z,   0;      % at cup height
+        cup1_base_entry_xy(1), cup1_base_entry_xy(2), hover_z1, 0;   % go directly to inboard descent line
+        cup1_base_entry_xy(1), cup1_base_entry_xy(2), 110,      -90; % start vertical descent
+        cup1_base_entry_xy(1), cup1_base_entry_xy(2), 80,       -60; % pitch up during descent
+        cup1_final_entry_xy(1), cup1_final_entry_xy(2), 55,     -30; % diagonal low approach
+        cup1_x,              cup1_y,              cup1_z,    0;   % exact grip pose
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
@@ -79,8 +93,8 @@ try
         cup2_x, cup2_y, hover_z1, 0;        % lower a bit
         cup2_x, cup2_y, hover_z1, -80;    % start pour
         cup2_x, cup2_y, hover_z1, 0;             % upright and lift
-        cup1_x, cup1_y, hover_z1, 0;             % back above first cup
-        cup1_x, cup1_y, cup1_z,   0;             % back to original height
+        cup1_x, cup1_y, cup1_place_entry_z, 0;   % above placement
+        cup1_x, cup1_y, cup1_place_z,       0;   % straight vertical drop
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
@@ -89,9 +103,11 @@ try
     hw.openGripper();
     pause(0.26);
 
-    % Lift back up before next demo
+    % Retract along the same safe inboard side, then rise once clear
     move_seq(hw, [
-        cup1_x, cup1_y, hover_z1, 0;
+        cup1_final_entry_xy(1), cup1_final_entry_xy(2), 55,     -30;
+        cup1_base_entry_xy(1), cup1_base_entry_xy(2), 80,       -60;
+        cup1_base_entry_xy(1), cup1_base_entry_xy(2), hover_z1, 0;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
@@ -101,7 +117,7 @@ try
     fprintf('\n=== Demo 2: Stirrer Path ===\n');
 
     stir_src_x = 150;  stir_src_y = -150;  stir_src_z = 170;
-    hover_stir = 210;
+    hover_stir = 240;
     stir_center_x = 200;  stir_center_y = 0;  stir_center_z = 270;
 
     % Configure gripper for 25 mm stirrer
@@ -115,9 +131,9 @@ try
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
-    fprintf('[D2] Gripping stirrer (24mm)...\n');
-    pct_stir24 = (1 - 24/80) * 100;
-    hw.setGripperPosition(pct_stir24);
+    fprintf('[D2] Gripping stirrer (11mm)...\n');
+    pct_stir11 = (1 - 11/80) * 100;
+    hw.setGripperPosition(pct_stir11);
     pause(0.26);
 
     % Move up and across to stirring centre
@@ -128,31 +144,27 @@ try
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
-    % Stirring loop: 4 laps around the 8-point path at Z=180, pitch=0
+    % Stirring loop: approximate a circle with many short segments so the
+    % motion feels continuous rather than corner-to-corner.
+    stir_path_radius = 7.5;
+    stir_path_points = 16;
+    stir_path_angles = linspace(0, 2*pi, stir_path_points + 1);
+    stir_path_angles(end) = [];
     path_points = [
-        207.500,   3.107, 180;
-        203.107,   7.500, 180;
-        196.893,   7.500, 180;
-        192.500,   3.107, 180;
-        192.500,  -3.107, 180;
-        196.893,  -7.500, 180;
-        203.107,  -7.500, 180;
-        207.500,  -3.107, 180;
+        stir_center_x + stir_path_radius * cos(stir_path_angles(:)), ...
+        stir_center_y + stir_path_radius * sin(stir_path_angles(:)), ...
+        180 * ones(stir_path_points, 1)
     ];
 
-    fprintf('[D2] Running stirring path...\n');
-    STIR_MOVE_TIME = 0.1;   % ~5x faster than normal MOVE_TIME
-    STIR_PAUSE     = 0.02;
-    for lap = 1:4
-        for k = 1:size(path_points,1)
-            px = path_points(k,1);
-            py = path_points(k,2);
-            pz = path_points(k,3);
-            hw.moveToPose(px, py, pz, 0, ...
-                          STIR_MOVE_TIME, MOTION_MODE, Z_FLOOR);
-            pause(STIR_PAUSE);
-        end
-    end
+    fprintf('[D2] Running circular stirring path...\n');
+    stir_entry_pose = [path_points(1, 1), path_points(1, 2), path_points(1, 3), 0];
+    stir_waypoints = [path_points, zeros(size(path_points, 1), 1)];
+    stir_stream_path = [
+        stir_entry_pose;
+        repmat(stir_waypoints, 4, 1);
+        stir_waypoints(1, :)
+    ];
+    stream_pose_path(hw, stir_stream_path, 120, 0.02, Z_FLOOR);
 
     % Return stirrer to original pose
     move_seq(hw, [
@@ -177,20 +189,34 @@ try
     % ====================================================================
     fprintf('\n=== Demo 3: Cup Pour 2 (to mouth) ===\n');
 
-    cup2_x = 200;  cup2_y = 0;   cup2_z = 60;
+    cup2_x = 200;  cup2_y = 0;   cup2_z = 40;
     hover2_z = 150;
+    cup2_base_approach_x = 120;
+    cup2_mid_approach_x = 160;
+    cup2_place_z = 40;
+    cup2_pitch_zero_x = 175;
 
-    % "Mouth" arc poses (X, Y, Z, Pitch)
-    mouth_start = [150, 150, 100,   0];
-    mouth_mid   = [175, 175, 150, -60];
-    mouth_end   = [200, 200, 150, -70];
+    % "Mouth" arc poses (X, Y, Z, Pitch), shifted 50 mm inward along radius
+    mouth_start_xy = [150, 150];
+    mouth_mid_xy   = [175, 175];
+    mouth_end_xy   = [200, 200];
+    mouth_radial_offset = 50;
+
+    mouth_start_xy = mouth_start_xy - mouth_radial_offset * (mouth_start_xy / norm(mouth_start_xy));
+    mouth_mid_xy   = mouth_mid_xy   - mouth_radial_offset * (mouth_mid_xy   / norm(mouth_mid_xy));
+    mouth_end_xy   = mouth_end_xy   - mouth_radial_offset * (mouth_end_xy   / norm(mouth_end_xy));
+
+    mouth_start = [mouth_start_xy(1), mouth_start_xy(2), 100,   0];
+    mouth_mid   = [mouth_mid_xy(1),   mouth_mid_xy(2),   150, -60];
+    mouth_end   = [mouth_end_xy(1),   mouth_end_xy(2),   150, -70];
 
     % Approach and pick second cup
     hw.openGripper(); pause(PAUSE_SHORT);
     move_seq(hw, [
-        cup2_x, cup2_y, hover2_z, 0;
-        cup2_x, cup2_y, 100,      0;
-        cup2_x, cup2_y, cup2_z,   0;
+        cup2_base_approach_x, cup2_y, hover2_z,  -45;
+        cup2_mid_approach_x,  cup2_y, 100,       -20;
+        cup2_pitch_zero_x,    cup2_y, cup2_z,      0;
+        cup2_x,               cup2_y, cup2_z,     0;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
@@ -201,7 +227,8 @@ try
 
     % Move from pickup to mouth_start
     move_seq(hw, [
-        cup2_x, cup2_y, hover2_z,          0;
+        cup2_mid_approach_x,  cup2_y, 100,       -20;
+        cup2_base_approach_x, cup2_y, hover2_z,  -45;
         mouth_start(1), mouth_start(2), mouth_start(3), mouth_start(4);
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
@@ -218,8 +245,10 @@ try
     % Return cup 2 to its original pickup position
     fprintf('[D3] Returning second cup...\n');
     move_seq(hw, [
-        cup2_x, cup2_y, hover2_z, 0;
-        cup2_x, cup2_y, cup2_z,   0;
+        cup2_base_approach_x, cup2_y, hover2_z,  -45;
+        cup2_mid_approach_x,  cup2_y, 100,       -20;
+        cup2_pitch_zero_x,    cup2_y, cup2_place_z, 0;
+        cup2_x,               cup2_y, cup2_place_z, 0;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
@@ -229,7 +258,8 @@ try
 
     % Lift away
     move_seq(hw, [
-        cup2_x, cup2_y, hover2_z, 0;
+        cup2_mid_approach_x,  cup2_y, 100,       -20;
+        cup2_base_approach_x, cup2_y, hover2_z,  -45;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
@@ -271,5 +301,56 @@ for i = 1:size(waypoints, 1)
     p = waypoints(i, 4);
     hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
 end
+end
+
+function stream_pose_path(hw, waypoints, speed_mm_s, dt, z_floor)
+if isempty(waypoints)
+    return;
+end
+
+q_current = hw.readAngles();
+[T_current, ~] = OpenManipulator.FK(q_current);
+prev_pose = [T_current(1:3, 4)', -(q_current(2) + q_current(3) + q_current(4))];
+
+for i = 1:size(waypoints, 1)
+    target_pose = waypoints(i, :);
+    dist_lin = norm(target_pose(1:3) - prev_pose(1:3));
+    dist_rot = abs(target_pose(4) - prev_pose(4));
+    duration = max([dist_lin / max(speed_mm_s, 1e-6), dist_rot / 90.0, dt]);
+    num_steps = max(1, ceil(duration / dt));
+
+    for step = 1:num_steps
+        s = step / num_steps;
+        s_smooth = s * s * (3.0 - 2.0 * s);
+        pose = (1 - s_smooth) * prev_pose + s_smooth * target_pose;
+
+        if pose(3) < z_floor
+            error('Motion Safety Violation: Commanded Z (%.1f mm) < %.1f mm. Aborting.', pose(3), z_floor);
+        end
+
+        q_interp = OpenManipulator.IK(pose(1), pose(2), pose(3), pose(4));
+        [q_interp, ~] = OpenManipulator.JointLimits.Clamp(q_interp);
+        encoders = zeros(1, 4);
+        for joint_idx = 1:4
+            encoders(joint_idx) = OpenManipulator.HardwareInterface.deg2enc(q_interp(joint_idx));
+        end
+        hw.syncWritePositions(encoders);
+        pause(dt);
+    end
+
+    prev_pose = target_pose;
+end
+
+q_final = OpenManipulator.IK(prev_pose(1), prev_pose(2), prev_pose(3), prev_pose(4));
+[q_final, ~] = OpenManipulator.JointLimits.Clamp(q_final);
+encoders = zeros(1, 4);
+for joint_idx = 1:4
+    encoders(joint_idx) = OpenManipulator.HardwareInterface.deg2enc(q_final(joint_idx));
+end
+for tail = 1:5
+    hw.syncWritePositions(encoders);
+    pause(dt);
+end
+hw.waitForMotion();
 end
 
