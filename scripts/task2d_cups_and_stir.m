@@ -37,6 +37,8 @@ PAUSE_MED   = 0.16;
 try
     % ── Connect ──────────────────────────────────────────────────────────
     hw = OpenManipulator.HardwareInterface(PORT, BAUD);
+    hw.diag_enabled = true;
+    hw.startDiagnosticRun('task2d_cups_and_stir');
     hw.configure(VELOCITY);
     hw.enableTorque();
     hw.openGripper();
@@ -206,19 +208,20 @@ try
     cup2_place_z = 50;
     cup2_pitch_zero_x = 175;
 
-    % "Mouth" arc poses (X, Y, Z, Pitch), shifted 50 mm inward along radius
+    % "Mouth" arc poses (X, Y, Z, Pitch), kept conservative to stay away from
+    % wrist-limit and reach-limit behavior observed in logs.
     mouth_start_xy = [150, 150];
-    mouth_mid_xy   = [175, 175];
-    mouth_end_xy   = [200, 200];
-    mouth_radial_offset = 50;
+    mouth_mid_xy   = [165, 165];
+    mouth_end_xy   = [180, 180];
+    mouth_radial_offset = 20;
 
     mouth_start_xy = mouth_start_xy - mouth_radial_offset * (mouth_start_xy / norm(mouth_start_xy));
     mouth_mid_xy   = mouth_mid_xy   - mouth_radial_offset * (mouth_mid_xy   / norm(mouth_mid_xy));
     mouth_end_xy   = mouth_end_xy   - mouth_radial_offset * (mouth_end_xy   / norm(mouth_end_xy));
 
-    mouth_start = [mouth_start_xy(1), mouth_start_xy(2), 100,   0];
-    mouth_mid   = [mouth_mid_xy(1),   mouth_mid_xy(2),   150, -60];
-    mouth_end   = [mouth_end_xy(1),   mouth_end_xy(2),   150, -70];
+    mouth_start = [mouth_start_xy(1), mouth_start_xy(2), 110,   0];
+    mouth_mid   = [mouth_mid_xy(1),   mouth_mid_xy(2),   135, -30];
+    mouth_end   = [mouth_end_xy(1),   mouth_end_xy(2),   140, -45];
 
     % Approach and pick second cup
     hw.openGripper(); pause(PAUSE_SHORT);
@@ -248,7 +251,9 @@ try
     fprintf('[D3] Performing mouth pour cycles...\n');
     for cycle = 1:3
         move_seq_pour(hw, [
+            mouth_mid(1),  mouth_mid(2),  mouth_mid(3),  mouth_mid(4);
             mouth_end(1),  mouth_end(2),  mouth_end(3),  mouth_end(4);
+            mouth_mid(1),  mouth_mid(2),  mouth_mid(3),  mouth_mid(4);
             mouth_start(1), mouth_start(2), mouth_start(3), mouth_start(4);
         ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     end
@@ -309,24 +314,12 @@ function move_seq(hw, waypoints, move_time, motion_mode, z_floor)
 if isempty(waypoints)
     return;
 end
-if motion_mode == 2
-    hw.movePosePath(waypoints, struct( ...
-        'speed_mm_s', 70, ...
-        'rot_speed_deg_s', 45, ...
-        'dt', 0.02, ...
-        'z_floor_mm', z_floor, ...
-        'motion_mode', motion_mode, ...
-        'smoothing', 'smoothstep', ...
-        'final_settle', true, ...
-        'verify_final', true));
-else
-    for i = 1:size(waypoints, 1)
-        x = waypoints(i, 1);
-        y = waypoints(i, 2);
-        z = waypoints(i, 3);
-        p = waypoints(i, 4);
-        hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
-    end
+for i = 1:size(waypoints, 1)
+    x = waypoints(i, 1);
+    y = waypoints(i, 2);
+    z = waypoints(i, 3);
+    p = waypoints(i, 4);
+    hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
 end
 end
 
@@ -334,24 +327,13 @@ function move_seq_pick(hw, waypoints, move_time, motion_mode, z_floor)
 if isempty(waypoints)
     return;
 end
-if motion_mode == 2
-    hw.movePosePath(waypoints, struct( ...
-        'speed_mm_s', 45, ...
-        'rot_speed_deg_s', 35, ...
-        'dt', 0.02, ...
-        'z_floor_mm', z_floor, ...
-        'motion_mode', motion_mode, ...
-        'smoothing', 'smoothstep', ...
-        'final_settle', true, ...
-        'verify_final', true));
-else
-    for i = 1:size(waypoints, 1)
-        x = waypoints(i, 1);
-        y = waypoints(i, 2);
-        z = waypoints(i, 3);
-        p = waypoints(i, 4);
-        hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
-    end
+pick_move_time = move_time * 1.5;
+for i = 1:size(waypoints, 1)
+    x = waypoints(i, 1);
+    y = waypoints(i, 2);
+    z = waypoints(i, 3);
+    p = waypoints(i, 4);
+    hw.moveToPose(x, y, z, p, pick_move_time, motion_mode, z_floor);
 end
 end
 
@@ -359,24 +341,13 @@ function move_seq_pour(hw, waypoints, move_time, motion_mode, z_floor)
 if isempty(waypoints)
     return;
 end
-if motion_mode == 2
-    hw.movePosePath(waypoints, struct( ...
-        'speed_mm_s', 23, ...
-        'rot_speed_deg_s', 15, ...
-        'dt', 0.02, ...
-        'z_floor_mm', z_floor, ...
-        'motion_mode', motion_mode, ...
-        'smoothing', 'smoothstep', ...
-        'final_settle', true, ...
-        'verify_final', true));
-else
-    for i = 1:size(waypoints, 1)
-        x = waypoints(i, 1);
-        y = waypoints(i, 2);
-        z = waypoints(i, 3);
-        p = waypoints(i, 4);
-        hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
-    end
+pour_move_time = move_time * 3.0;
+for i = 1:size(waypoints, 1)
+    x = waypoints(i, 1);
+    y = waypoints(i, 2);
+    z = waypoints(i, 3);
+    p = waypoints(i, 4);
+    hw.moveToPose(x, y, z, p, pour_move_time, motion_mode, z_floor);
 end
 end
 
@@ -384,24 +355,13 @@ function move_seq_cup2_contact(hw, waypoints, move_time, motion_mode, z_floor)
 if isempty(waypoints)
     return;
 end
-if motion_mode == 2
-    hw.movePosePath(waypoints, struct( ...
-        'speed_mm_s', 15, ...
-        'rot_speed_deg_s', 12, ...
-        'dt', 0.02, ...
-        'z_floor_mm', z_floor, ...
-        'motion_mode', motion_mode, ...
-        'smoothing', 'smoothstep', ...
-        'final_settle', true, ...
-        'verify_final', true));
-else
-    for i = 1:size(waypoints, 1)
-        x = waypoints(i, 1);
-        y = waypoints(i, 2);
-        z = waypoints(i, 3);
-        p = waypoints(i, 4);
-        hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
-    end
+cup_contact_move_time = move_time * 3.0;
+for i = 1:size(waypoints, 1)
+    x = waypoints(i, 1);
+    y = waypoints(i, 2);
+    z = waypoints(i, 3);
+    p = waypoints(i, 4);
+    hw.moveToPose(x, y, z, p, cup_contact_move_time, motion_mode, z_floor);
 end
 end
 

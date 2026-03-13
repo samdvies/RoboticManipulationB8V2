@@ -269,24 +269,12 @@ function move_seq(hw, waypoints, move_time, motion_mode, z_floor)
 if isempty(waypoints)
     return;
 end
-if motion_mode == 2
-    hw.movePosePath(waypoints, struct( ...
-        'speed_mm_s', 70, ...
-        'rot_speed_deg_s', 45, ...
-        'dt', 0.02, ...
-        'z_floor_mm', z_floor, ...
-        'motion_mode', motion_mode, ...
-        'smoothing', 'smoothstep', ...
-        'final_settle', true, ...
-        'verify_final', true));
-else
-    for i = 1:size(waypoints, 1)
-        x = waypoints(i, 1);
-        y = waypoints(i, 2);
-        z = waypoints(i, 3);
-        p = waypoints(i, 4);
-        hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
-    end
+for i = 1:size(waypoints, 1)
+    x = waypoints(i, 1);
+    y = waypoints(i, 2);
+    z = waypoints(i, 3);
+    p = waypoints(i, 4);
+    hw.moveToPose(x, y, z, p, move_time, motion_mode, z_floor);
 end
 end
 

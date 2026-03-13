@@ -44,6 +44,16 @@ classdef HardwareInterface < handle
         lib_name    % SDK library name
         group_num   % Sync write group handler
         is_connected = false;
+        diag_enabled = false;
+        verify_step_logging = false;
+        diag_state = struct( ...
+            'run_id', 0, ...
+            'last_command', '', ...
+            'last_command_time', NaN, ...
+            'last_syncwrite_time', NaN, ...
+            'last_read_time', NaN, ...
+            'last_wait_status', '', ...
+            'last_error', '');
     end
 
     methods
@@ -184,6 +194,7 @@ classdef HardwareInterface < handle
         function syncWritePositions(obj, encoder_targets)
         %SYNCWRITEPOSITIONS Send all 4 goal positions in a single packet
         %   syncWritePositions([enc1, enc2, enc3, enc4])
+            obj.updateDiag('last_command', sprintf('syncWritePositions [%d %d %d %d]', encoder_targets));
 
             % Clear previous params
             groupSyncWriteClearParam(obj.group_num);
@@ -197,6 +208,7 @@ classdef HardwareInterface < handle
 
             % Transmit
             groupSyncWriteTxPacket(obj.group_num);
+            obj.updateDiag('last_syncwrite_time', tic);
         end
 
         function moveToAngles(obj, q)
@@ -227,6 +239,8 @@ classdef HardwareInterface < handle
             if nargin < 9 || isempty(ctx_or_fly)
                 ctx_or_fly = false;
             end
+            obj.updateDiag('last_command', sprintf('moveToPose target=[%.1f %.1f %.1f %.1f] time=%.2f mode=%d', ...
+                x, y, z, pitch, time_sec, mode));
             preplanned_route = false;
             if isstruct(ctx_or_fly) && isfield(ctx_or_fly, 'preplanned_route')
                 preplanned_route = logical(ctx_or_fly.preplanned_route);
@@ -316,6 +330,7 @@ classdef HardwareInterface < handle
             if isempty(waypoints)
                 return;
             end
+            obj.updateDiag('last_command', sprintf('movePosePath waypoints=%d', size(waypoints, 1)));
             if size(waypoints, 2) ~= 4
                 error('movePosePath expects Nx4 waypoints [x y z pitch].');
             end
@@ -683,7 +698,7 @@ classdef HardwareInterface < handle
                         fprintf('  [jitter dbg] step %d t=%.2f cmd_q=[%.1f %.1f %.1f %.1f] actual_q=[%.1f %.1f %.1f %.1f] err_mm=%.1f\n', ...
                             step, step*dt, q_interp, q_act, err_mm);
                     end
-                    if log_verify_pose && (mod(step, 2) == 0 || step == 1 || step == num_steps)
+                    if log_verify_pose && obj.verify_step_logging && (mod(step, 2) == 0 || step == 1 || step == num_steps)
                         q_act = obj.readAngles();
                         [T_act, ~] = OpenManipulator.FK(q_act);
                         pos_act = T_act(1:3, 4);
@@ -850,7 +865,7 @@ classdef HardwareInterface < handle
                         fprintf('  [jitter dbg] t=%.2f cmd_q=[%.1f %.1f %.1f %.1f] actual_q=[%.1f %.1f %.1f %.1f] err_mm=%.1f\n', ...
                             t, new_q, q_act, err_mm);
                     end
-                    if log_verify_pose && ~jac_final_phase && (mod(round(t/dt), 2) == 0 || t <= dt*1.5)
+                    if log_verify_pose && obj.verify_step_logging && ~jac_final_phase && (mod(round(t/dt), 2) == 0 || t <= dt*1.5)
                         q_act = obj.readAngles();
                         [T_act, ~] = OpenManipulator.FK(q_act);
                         pos_act = T_act(1:3, 4);
@@ -911,6 +926,15 @@ classdef HardwareInterface < handle
                     obj.DXL_IDS(i), obj.ADDR_PRESENT_POSITION);
                 q(i) = obj.enc2deg(enc);
             end
+            if any(~isfinite(q))
+                obj.diagDump(sprintf('Invalid joint read: non-finite values q=[%.1f %.1f %.1f %.1f]', q));
+                error('Hardware Read Invalid: Non-finite joint angle(s) read from robot.');
+            end
+            if all(abs(q + 180.0) < 1e-6)
+                obj.diagDump(sprintf('Invalid joint read sentinel detected q=[%.1f %.1f %.1f %.1f]', q));
+                error('Hardware Read Invalid: Joint read returned sentinel [-180 -180 -180 -180]. Aborting before state corruption.');
+            end
+            obj.updateDiag('last_read_time', tic);
         end
 
         function waitForMotion(obj, timeout)
@@ -920,6 +944,7 @@ classdef HardwareInterface < handle
             if nargin < 2
                 timeout = 10.0;
             end
+            obj.updateDiag('last_wait_status', sprintf('waitForMotion start timeout=%.1f', timeout));
 
             start_time = tic;
             while toc(start_time) < timeout
@@ -946,12 +971,60 @@ classdef HardwareInterface < handle
                         end
                     end
                     if still_stopped
+                        obj.updateDiag('last_wait_status', 'waitForMotion complete');
                         return;
                     end
                 end
                 pause(0.02);
             end
+            obj.updateDiag('last_wait_status', sprintf('waitForMotion timeout after %.1f s', timeout));
+            obj.diagDump(sprintf('waitForMotion timeout after %.1f s', timeout));
             warning('Motion timeout after %.1f seconds.', timeout);
+        end
+
+        function startDiagnosticRun(obj, label)
+        %STARTDIAGNOSTICRUN Mark the start of a logical motion run for diagnostics.
+            if nargin < 2 || isempty(label)
+                label = 'unnamed-run';
+            end
+            obj.diag_state.run_id = obj.diag_state.run_id + 1;
+            obj.diag_state.last_command = sprintf('run-start: %s', label);
+            obj.diag_state.last_command_time = now;
+            obj.diag_state.last_syncwrite_time = NaN;
+            obj.diag_state.last_read_time = NaN;
+            obj.diag_state.last_wait_status = '';
+            obj.diag_state.last_error = '';
+            if obj.diag_enabled
+                fprintf('[HW DIAG] run %d start: %s\n', obj.diag_state.run_id, label);
+            end
+        end
+
+        function updateDiag(obj, field_name, value)
+        %UPDATEDIAG Lightweight diagnostic state update.
+            obj.diag_state.(field_name) = value;
+            if strcmp(field_name, 'last_command')
+                obj.diag_state.last_command_time = now;
+            end
+        end
+
+        function diagDump(obj, message)
+        %DIAGDUMP Print a compact snapshot of diagnostic state.
+            if nargin < 2
+                message = 'diagnostic snapshot';
+            end
+            obj.diag_state.last_error = message;
+            fprintf('[HW DIAG] %s\n', message);
+            fprintf('[HW DIAG] run_id=%d last_command=%s\n', obj.diag_state.run_id, obj.diag_state.last_command);
+            fprintf('[HW DIAG] last_wait_status=%s\n', obj.diag_state.last_wait_status);
+            if ~isnan(obj.diag_state.last_command_time)
+                fprintf('[HW DIAG] last_command_time=%s\n', datestr(obj.diag_state.last_command_time, 'yyyy-mm-dd HH:MM:SS.FFF'));
+            end
+            if isa(obj.diag_state.last_syncwrite_time, 'double') && ~isnan(obj.diag_state.last_syncwrite_time)
+                fprintf('[HW DIAG] last_syncwrite_tic_recorded=true\n');
+            end
+            if isa(obj.diag_state.last_read_time, 'double') && ~isnan(obj.diag_state.last_read_time)
+                fprintf('[HW DIAG] last_read_tic_recorded=true\n');
+            end
         end
 
         function configureGripper(obj, velocity)
