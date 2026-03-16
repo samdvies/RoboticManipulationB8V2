@@ -33,6 +33,14 @@ HOME_POSE = [134, 0, 240, -45];  % [X Y Z Pitch]
 % General timing
 PAUSE_SHORT = 0.1;
 PAUSE_MED   = 0.16;
+CUP_GRIP_WIDTH_MM = 36;
+FIRST_CUP_GRIP_WIDTH_MM = 36;
+POUR_ANGLE_BOOST_DEG = 20;
+FIRST_POUR_ANGLE_BOOST_DEG = 0;
+STIR_GRIP_WIDTH_MM = 6;
+STIR_PATH_RADIUS_MM = 14.0;
+STIR_STREAM_SPEED_MM_S = 155;
+STIR_Z_OSCILLATION_MM = 10.0;
 
 try
     % ── Connect ──────────────────────────────────────────────────────────
@@ -80,20 +88,20 @@ try
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
-    % Grip first cup to approx 60 mm jaw width
-    fprintf('[D1] Gripping first cup (60mm)...\n');
-    pct_cup60 = (1 - 60/80) * 100;   % assuming 0%%=80mm open, 100%%=0mm
-    hw.setGripperPosition(pct_cup60);
+    % Grip first cup with a slightly tighter jaw width for better retention.
+    fprintf('[D1] Gripping first cup (%.0fmm)...\n', FIRST_CUP_GRIP_WIDTH_MM);
+    pct_first_cup_grip = (1 - FIRST_CUP_GRIP_WIDTH_MM/80) * 100;   % assuming 0%%=80mm open, 100%%=0mm
+    pct_cup_grip = (1 - CUP_GRIP_WIDTH_MM/80) * 100;   % shared cup 2 grip
+    hw.setGripperPosition(pct_first_cup_grip);
     pause(0.33);
 
     % Carry to second cup and pour, then return first cup
     move_seq(hw, [
         cup1_x, cup1_y, hover_z1, 0;             % lift
         cup2_x, cup2_y, hover_z1, 0;             % above second cup
-        cup2_x, cup2_y, hover_z1, 0;        % lower a bit
-        cup2_x, cup2_y, hover_z1, -80;    % start pour
-        cup2_x, cup2_y, hover_z1, 0;             % upright and lift
-        cup1_x, cup1_y, cup1_place_entry_z, 0;   % above placement
+        cup2_x, cup2_y, hover_z1, -80 - FIRST_POUR_ANGLE_BOOST_DEG;    % start pour
+        cup2_x, cup2_y, hover_z1, 0;             % reset upright in place before translating
+        cup1_x, cup1_y, cup1_place_entry_z, 0;   % move away only after pitch is neutral
         cup1_x, cup1_y, cup1_place_z,       0;   % straight vertical drop
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
@@ -118,7 +126,7 @@ try
 
     stir_src_x = 150;  stir_src_y = -150;  stir_src_z = 170;
     hover_stir = 240;
-    stir_center_x = 200;  stir_center_y = 0;  stir_center_z = 270;
+    stir_center_x = 190;  stir_center_y = 0;  stir_center_z = 270;
 
     % Configure gripper for 25 mm stirrer
     fprintf('[D2] Opening gripper for 25mm stirrer...\n');
@@ -131,9 +139,9 @@ try
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
-    fprintf('[D2] Gripping stirrer (11mm)...\n');
-    pct_stir11 = (1 - 11/80) * 100;
-    hw.setGripperPosition(pct_stir11);
+    fprintf('[D2] Gripping stirrer (%.0fmm)...\n', STIR_GRIP_WIDTH_MM);
+    pct_stir_grip = (1 - STIR_GRIP_WIDTH_MM/80) * 100;
+    hw.setGripperPosition(pct_stir_grip);
     pause(0.26);
 
     % Move up and across to stirring centre
@@ -146,25 +154,28 @@ try
 
     % Stirring loop: approximate a circle with many short segments so the
     % motion feels continuous rather than corner-to-corner.
-    stir_path_radius = 7.5;
+    stir_path_radius = STIR_PATH_RADIUS_MM;
     stir_path_points = 16;
     stir_path_angles = linspace(0, 2*pi, stir_path_points + 1);
     stir_path_angles(end) = [];
     path_points = [
         stir_center_x + stir_path_radius * cos(stir_path_angles(:)), ...
         stir_center_y + stir_path_radius * sin(stir_path_angles(:)), ...
-        180 * ones(stir_path_points, 1)
+        180 + STIR_Z_OSCILLATION_MM * sin(stir_path_angles(:))
     ];
 
     fprintf('[D2] Running circular stirring path...\n');
     stir_entry_pose = [path_points(1, 1), path_points(1, 2), path_points(1, 3), 0];
     stir_waypoints = [path_points, zeros(size(path_points, 1), 1)];
+    stir_waypoints_reverse = flipud(stir_waypoints);
     stir_stream_path = [
         stir_entry_pose;
         repmat(stir_waypoints, 4, 1);
-        stir_waypoints(1, :)
+        stir_waypoints(1, :);
+        repmat(stir_waypoints_reverse, 4, 1);
+        stir_waypoints_reverse(1, :)
     ];
-    stream_pose_path(hw, stir_stream_path, 120, 0.02, Z_FLOOR);
+    stream_pose_path(hw, stir_stream_path, STIR_STREAM_SPEED_MM_S, 0.02, Z_FLOOR);
 
     % Return stirrer to original pose
     move_seq(hw, [
@@ -189,12 +200,14 @@ try
     % ====================================================================
     fprintf('\n=== Demo 3: Cup Pour 2 (to mouth) ===\n');
 
-    cup2_x = 200;  cup2_y = 0;   cup2_z = 40;
+    cup2_x = 200;  cup2_y = 0;   cup2_pick_z = 50;
     hover2_z = 150;
     cup2_base_approach_x = 120;
     cup2_mid_approach_x = 160;
-    cup2_place_z = 40;
-    cup2_pitch_zero_x = 175;
+    cup2_place_z = cup2_pick_z;
+    cup2_holder_clearance_mm = 50;
+    cup2_clearance_z = cup2_pick_z + cup2_holder_clearance_mm;
+    cup2_hold_pitch_deg = -10;
 
     % "Mouth" arc poses (X, Y, Z, Pitch), shifted 50 mm inward along radius
     mouth_start_xy = [150, 150];
@@ -207,28 +220,27 @@ try
     mouth_end_xy   = mouth_end_xy   - mouth_radial_offset * (mouth_end_xy   / norm(mouth_end_xy));
 
     mouth_start = [mouth_start_xy(1), mouth_start_xy(2), 100,   0];
-    mouth_mid   = [mouth_mid_xy(1),   mouth_mid_xy(2),   150, -60];
-    mouth_end   = [mouth_end_xy(1),   mouth_end_xy(2),   150, -70];
+    mouth_mid   = [mouth_mid_xy(1),   mouth_mid_xy(2),   150, -60 - POUR_ANGLE_BOOST_DEG];
+    mouth_end   = [mouth_end_xy(1),   mouth_end_xy(2),   150, -70 - POUR_ANGLE_BOOST_DEG];
 
     % Approach and pick second cup
     hw.openGripper(); pause(PAUSE_SHORT);
     move_seq(hw, [
-        cup2_base_approach_x, cup2_y, hover2_z,  -45;
-        cup2_mid_approach_x,  cup2_y, 100,       -20;
-        cup2_pitch_zero_x,    cup2_y, cup2_z,      0;
-        cup2_x,               cup2_y, cup2_z,     0;
+        cup2_base_approach_x, cup2_y, hover2_z,  cup2_hold_pitch_deg;
+        cup2_mid_approach_x,  cup2_y, cup2_clearance_z, cup2_hold_pitch_deg;
+        cup2_x,               cup2_y, cup2_pick_z,       0;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 
-    fprintf('[D3] Gripping second cup (60mm)...\n');
-    pct_cup60 = (1 - 60/80) * 100;
-    hw.setGripperPosition(pct_cup60);
+    fprintf('[D3] Gripping second cup (%.0fmm)...\n', CUP_GRIP_WIDTH_MM);
+    hw.setGripperPosition(pct_cup_grip);
     pause(0.26);
 
     % Move from pickup to mouth_start
     move_seq(hw, [
-        cup2_mid_approach_x,  cup2_y, 100,       -20;
-        cup2_base_approach_x, cup2_y, hover2_z,  -45;
+        cup2_x,               cup2_y, cup2_clearance_z,  0;
+        cup2_mid_approach_x,  cup2_y, cup2_clearance_z, cup2_hold_pitch_deg;
+        cup2_base_approach_x, cup2_y, hover2_z,         cup2_hold_pitch_deg;
         mouth_start(1), mouth_start(2), mouth_start(3), mouth_start(4);
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
@@ -245,9 +257,9 @@ try
     % Return cup 2 to its original pickup position
     fprintf('[D3] Returning second cup...\n');
     move_seq(hw, [
-        cup2_base_approach_x, cup2_y, hover2_z,  -45;
-        cup2_mid_approach_x,  cup2_y, 100,       -20;
-        cup2_pitch_zero_x,    cup2_y, cup2_place_z, 0;
+        cup2_base_approach_x, cup2_y, hover2_z,  cup2_hold_pitch_deg;
+        cup2_mid_approach_x,  cup2_y, cup2_clearance_z, cup2_hold_pitch_deg;
+        cup2_x,               cup2_y, cup2_clearance_z,  0;
         cup2_x,               cup2_y, cup2_place_z, 0;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
@@ -256,10 +268,12 @@ try
     hw.openGripper();
     pause(0.26);
 
-    % Lift away
+    % Retract in X first so the released cup can settle in the holder
+    % before the arm lifts away vertically.
     move_seq(hw, [
-        cup2_mid_approach_x,  cup2_y, 100,       -20;
-        cup2_base_approach_x, cup2_y, hover2_z,  -45;
+        cup2_mid_approach_x,  cup2_y, cup2_place_z,      0;
+        cup2_mid_approach_x,  cup2_y, cup2_clearance_z, cup2_hold_pitch_deg;
+        cup2_base_approach_x, cup2_y, hover2_z,  cup2_hold_pitch_deg;
     ], MOVE_TIME, MOTION_MODE, Z_FLOOR);
     pause(PAUSE_MED);
 

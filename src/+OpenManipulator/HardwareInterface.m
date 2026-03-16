@@ -44,6 +44,7 @@ classdef HardwareInterface < handle
         lib_name    % SDK library name
         group_num   % Sync write group handler
         is_connected = false;
+        last_valid_q = [];
     end
 
     methods
@@ -783,12 +784,73 @@ classdef HardwareInterface < handle
         function q = readAngles(obj)
         %READANGLES Read present joint angles in degrees
         %   q = readAngles() returns [q1, q2, q3, q4] in degrees
-            q = zeros(1, 4);
-            for i = 1:4
-                enc = read4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, ...
-                    obj.DXL_IDS(i), obj.ADDR_PRESENT_POSITION);
-                q(i) = obj.enc2deg(enc);
+            max_attempts = 3;
+            limits = OpenManipulator.JointLimits.GetLimits();
+            last_reason = 'unknown read failure';
+
+            for attempt = 1:max_attempts
+                q_candidate = zeros(1, 4);
+                read_ok = true;
+
+                for i = 1:4
+                    enc = read4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, ...
+                        obj.DXL_IDS(i), obj.ADDR_PRESENT_POSITION);
+                    dxl_comm = getLastTxRxResult(obj.port_num, obj.PROTOCOL_VERSION);
+                    dxl_err = getLastRxPacketError(obj.port_num, obj.PROTOCOL_VERSION);
+
+                    if dxl_comm ~= 0 || dxl_err ~= 0
+                        read_ok = false;
+                        last_reason = sprintf('joint %d comm=%d packet=%d', obj.DXL_IDS(i), dxl_comm, dxl_err);
+                        break;
+                    end
+
+                    q_candidate(i) = obj.enc2deg(enc);
+                end
+
+                if ~read_ok
+                    pause(0.01);
+                    continue;
+                end
+
+                if any(~isfinite(q_candidate))
+                    last_reason = 'non-finite joint angle read';
+                    pause(0.01);
+                    continue;
+                end
+
+                if any(q_candidate < (limits(:, 1)' - 5.0)) || any(q_candidate > (limits(:, 2)' + 5.0))
+                    last_reason = sprintf('out-of-limits read [%.1f %.1f %.1f %.1f]', q_candidate);
+                    pause(0.01);
+                    continue;
+                end
+
+                if ~isempty(obj.last_valid_q)
+                    max_jump_deg = 120.0;
+                    if any(abs(q_candidate - obj.last_valid_q) > max_jump_deg)
+                        last_reason = sprintf('implausible jump from [%.1f %.1f %.1f %.1f] to [%.1f %.1f %.1f %.1f]', ...
+                            obj.last_valid_q, q_candidate);
+                        pause(0.01);
+                        continue;
+                    end
+                end
+
+                obj.last_valid_q = q_candidate;
+                q = q_candidate;
+                return;
             end
+
+            if ~isempty(obj.last_valid_q)
+                warning('readAngles:UsingLastValidPose', ...
+                    'Joint read failed after %d attempts (%s). Reusing last valid pose [%.1f %.1f %.1f %.1f].', ...
+                    max_attempts, last_reason, obj.last_valid_q(1), obj.last_valid_q(2), ...
+                    obj.last_valid_q(3), obj.last_valid_q(4));
+                q = obj.last_valid_q;
+                return;
+            end
+
+            error('readAngles:NoValidPose', ...
+                'Joint read failed after %d attempts and no valid cached pose exists (%s).', ...
+                max_attempts, last_reason);
         end
 
         function waitForMotion(obj, timeout)
