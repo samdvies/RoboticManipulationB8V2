@@ -72,6 +72,10 @@ for ci = 1:n_cubes
     cube_xy = cfg.cubes(ci, 1:2);
     place_xy = cfg.holders(empty_holder_idx(ci), :);
     pick_angle = inferPickupAngle(cube_xy);
+    release_z_adjust = 0;
+    if isfield(cfg, 'cube_release_z_adjust') && ci <= numel(cfg.cube_release_z_adjust)
+        release_z_adjust = cfg.cube_release_z_adjust(ci);
+    end
 
     plan{end+1} = struct('action', 'pick', 'cube', ci, ...
         'cube_xy', cube_xy, 'for_rotation', false, ...
@@ -80,7 +84,7 @@ for ci = 1:n_cubes
 
     plan{end+1} = struct('action', 'place_target', 'cube', ci, ...
         'target_xy', place_xy, 'stack_level', 0, 'is_rotated', false, ...
-        'pickup_angle_deg', pick_angle, 'release_z_adjust', 0, ...
+        'pickup_angle_deg', pick_angle, 'release_z_adjust', release_z_adjust, ...
         'desc', sprintf('C%d: Place at (%.0f, %.0f) [empty holder H%d]', ci, place_xy, empty_holder_idx(ci))); %#ok<AGROW>
 end
 

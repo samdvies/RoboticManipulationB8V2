@@ -62,11 +62,11 @@ cfg.PLACE_DROP_MM           = 1;  % release this many mm above rest
 % =========================================================================
 cfg.holders = [
     150,  150;
-    150, -150;
-    225, 0;
-    175, 75;
-    75, -175;
-    0, 175;
+    100,    0;
+    0, 150;
+    75, -200;
+    175, -175;
+    225,    0;
 ];
 
 % =========================================================================
@@ -74,9 +74,9 @@ cfg.holders = [
 %  Pick order = row order. First row picked first, etc.
 % =========================================================================
 cfg.cubes = [
-    75, -175;       % picked 1st (was Cube 3)
-    225,    0;      % picked 2nd (was Cube 1)
-    150, -150;      % picked 3rd (was Cube 2)
+    75, -200;       % picked 1st
+    175, -175;      % picked 2nd
+    225,    0;      % picked 3rd
 ];
 
 % =========================================================================
@@ -92,9 +92,16 @@ cfg.cube_place_targets = cfg.holders(1:3, :);  % unused for assignment; kept for
 %  CUBE 1: pos (above), offset (below). CUBE 2, CUBE 3 same.
 % =========================================================================
 cfg.cube_place_offsets = [
-    -4,  7;   % picked 1st (was Cube 3)
-    -2,  7;   % picked 2nd (was Cube 1)
-    -3,  7;   % picked 3rd (was Cube 2)
+    -3,  7;   % picked 1st
+    -6,  0;   % picked 2nd
+     1,  5;   % picked 3rd
+];
+
+% Per-cube release height adjustment (mm). Negative = place lower.
+cfg.cube_release_z_adjust = [
+     0;   % picked 1st
+   -10;   % picked 2nd
+     0;   % picked 3rd
 ];
 
 % =========================================================================
