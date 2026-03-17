@@ -1,112 +1,105 @@
 function cfg = task_config()
-% TASK_CONFIG  Workspace configuration for the general task planner (Task 2a).
+% TASK_CONFIG Workspace configuration for the general task planner (Task 2a).
 %
-% Edit this file to change the workspace layout, cube positions, holder
-% positions, and tuning parameters. The main script (task_general_planner.m)
-% loads this on startup so you don't have to re-enter values each run.
+% Task 2a moves three cubes from their starting holders to the three
+% initially empty holders.
 %
-% Task 2a: Three cubes to three empty holders. Standard pick and place only.
-% Per-cube placement offsets (radial, tangential) tune each cube's drop position.
+% Cube rows are [x, y, is_hard]:
+% - is_hard = 0 -> standard pitch -90 pick/place
+% - is_hard = 1 -> pitch 0 pick/place
 %
-% Usage:
-%   cfg = task_config();
+% Per-cube pick/place offsets stay in this file so each cube can be tuned
+% independently without touching motion code.
 
 % =========================================================================
-%  HARDWARE
+% HARDWARE
 % =========================================================================
-cfg.PORT         = 'COM4';
-cfg.BAUD         = 1000000;
-cfg.VELOCITY     = 40;         % 2x speed (was 20)
-cfg.MOVE_TIME    = 0.625;      % 2x speed: half time per move (was 1.25)
-cfg.MOTION_MODE  = 1;          % 1=joint interp, 2=task-space, 3=Jacobian
-cfg.Z_FLOOR      = 15;
-cfg.DRY_RUN      = false;      % true = IK/FK validation only, no hardware
+cfg.PORT = 'COM4';
+cfg.BAUD = 1000000;
+cfg.VELOCITY = 40;          % 2x speed (was 20)
+cfg.MOVE_TIME = 0.625;      % 2x speed: half time per move (was 1.25)
+cfg.MOTION_MODE = 1;        % 1=joint interp, 2=task-space, 3=Jacobian
+cfg.Z_FLOOR = 15;
+cfg.DRY_RUN = false;        % true = IK/FK validation only, no hardware
 
 % =========================================================================
-%  CUBE CONSTANTS
+% CUBE CONSTANTS
 % =========================================================================
-cfg.CUBE_Z_SURFACE = 32.5;    % table surface to cube bottom (mm)
-cfg.CUBE_SIZE      = 25;      % cube side length (mm)
-cfg.HOVER_Z        = 32.5 + 80;  % 112.5 mm — safe travel height for pick
-cfg.PLACE_APPROACH_Z = 180;   % mm — travel/approach Z; reachable at TRANSIT_PITCH
-cfg.TRANSIT_PITCH    = -45;   % pitch for hover/approach/retract (reachable at high Z)
-cfg.PICK_Z_OFFSET_MM = 2;     % add to computed pick height (cube center), mm
-cfg.PICK_LIFT_MM   = 5;       % small lift after gripping before full lift
-cfg.PICK_HOLD_TIME = 1.25;     % pause after closing gripper (s)
-cfg.HOME_POSE      = [134, 0, 240, -45];
+cfg.CUBE_Z_SURFACE = 32.5;      % table surface to cube bottom (mm)
+cfg.CUBE_SIZE = 25;             % cube side length (mm)
+cfg.HOVER_Z = 32.5 + 80;        % 112.5 mm - standard pick hover height
+cfg.PLACE_APPROACH_Z = 180;     % travel/approach Z used before place
+cfg.TRANSIT_PITCH = -45;        % standard transit pitch
+cfg.HARD_TRANSIT_PITCH = 0;     % hard cube transit pitch
+cfg.HARD_APPROACH_Z = 180;      % hard cube pick approach / retract height
+cfg.PICK_Z_OFFSET_MM = 2;       % added to computed cube-center pick height
+cfg.PICK_LIFT_MM = 5;           % small lift after gripping before full lift
+cfg.PICK_HOLD_TIME = 1.25;      % pause after closing gripper (s)
+cfg.HOME_POSE = [134, 0, 240, -45];
 
 % =========================================================================
-%  PICK OFFSETS (standard pick only for Task 2a)
+% PICK OFFSETS
 % =========================================================================
-% When cfg.cube_pick_offsets exists, it overrides angle-based: row i = [radial, tangential]
-% for cube i. Resolved at cube bearing atan2(y, x). Use [0,0] for a cube to pick at nominal pos.
-cfg.PICK_OFFSET_STD_0    = [0, 0];  % fallback when pick angle ~0°
-cfg.PICK_OFFSET_STD_22_5 = [0, 0];  % fallback when pick angle ~22.5°
-cfg.PICK_OFFSET_STD_45   = [0, 0];  % fallback when pick angle ~45°
+% Fallback angle-based standard offsets. Per-cube offsets below override
+% these when cube_index is supplied.
+cfg.PICK_OFFSET_STD_0 = [0, 0];
+cfg.PICK_OFFSET_STD_22_5 = [0, 0];
+cfg.PICK_OFFSET_STD_45 = [0, 0];
 
-% Per-cube pick offset [radial_mm, tangential_mm] — row i = cube picked in position i.
+% Per-cube pick offset [radial_mm, tangential_mm].
+% Tune the row for the cube's configured behavior (soft or hard).
 cfg.cube_pick_offsets = [
-    0,  0;   % picked 1st
-    0,  0;   % picked 2nd
-    0,  0;   % picked 3rd
+    0, 0;    % Cube 1
+    0, 0;    % Cube 2
+    0, 0;    % Cube 3
 ];
 
 % =========================================================================
-%  PLACE (common)
+% PLACE
 % =========================================================================
-cfg.PLACE_VERTICAL_OFFSET_MM = 25; % mm above place surface for "directly above" waypoint
-cfg.PLACE_DROP_MM           = 1;  % release this many mm above rest
+cfg.PLACE_VERTICAL_OFFSET_MM = 25;   % directly above place surface
+cfg.PLACE_DROP_MM = 1;               % release slightly above the surface
 
 % =========================================================================
-%  CUBE HOLDERS (all holder positions on the board, Nx2 [x, y])
+% HOLDERS
 % =========================================================================
 cfg.holders = [
     150,  150;
     100,    0;
-    0, 150;
-    75, -200;
+      0,  150;
+     75, -200;
     175, -175;
     225,    0;
 ];
 
 % =========================================================================
-%  TASK 2a: 3 CUBES — pos [x,y] only (no bridge, no rotation)
-%  Pick order = row order. First row picked first, etc.
+% TASK 2a CUBES
 % =========================================================================
+% [x, y, is_hard]
 cfg.cubes = [
-    75, -200;       % picked 1st
-    175, -175;      % picked 2nd
-    225,    0;      % picked 3rd
+     75, -200, 0;   % Cube 1
+    175, -175, 1;   % Cube 2 - example hard cube at large radius
+    225,    0, 0;   % Cube 3
 ];
 
-% =========================================================================
-%  PLACE TARGETS (optional; planner auto-assigns cubes to initially empty holders)
-%  The planner finds holders with no cube at start and assigns cube 1 -> 1st empty,
-%  cube 2 -> 2nd empty, cube 3 -> 3rd empty. So each place is to an empty holder.
-% =========================================================================
-cfg.cube_place_targets = cfg.holders(1:3, :);  % unused for assignment; kept for reference
+% Kept for reference only. Holder assignment is now planner-driven.
+cfg.cube_place_targets = cfg.holders(1:3, :);
 
-% =========================================================================
-%  PER-CUBE PLACE OFFSET [radial_mm, tangential_mm]
-%  Resolved at place target bearing (radial > 0 = away from base; tangent > 0 = CCW).
-%  CUBE 1: pos (above), offset (below). CUBE 2, CUBE 3 same.
-% =========================================================================
+% Per-cube place offset [radial_mm, tangential_mm].
 cfg.cube_place_offsets = [
-    -3,  7;   % picked 1st
-    -6,  0;   % picked 2nd
-     1,  5;   % picked 3rd
+    -3,  7;   % Cube 1
+    -6,  0;   % Cube 2
+     1,  5;   % Cube 3
 ];
 
 % Per-cube release height adjustment (mm). Negative = place lower.
 cfg.cube_release_z_adjust = [
-     0;   % picked 1st
-   -10;   % picked 2nd
-     0;   % picked 3rd
+     0;   % Cube 1
+   -10;   % Cube 2
+     0;   % Cube 3
 ];
 
-% =========================================================================
-%  GLOBAL PLACE OFFSET TUNING (added on top of per-cube offsets)
-% =========================================================================
+% Global place offset tuning added on top of the per-cube place offset.
 cfg.place_offset_tuning = [0, 0];
 
 end
