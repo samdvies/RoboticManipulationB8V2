@@ -1,11 +1,11 @@
-%% task2c_tool_through_gates.m
-% Task 2.c — Tool Through Gates (Constant-Z XY Motion)
+%% task2c_tool_through_gates_legacy.m
+% Legacy Task 2.c — Tool Through Gates (Constant-Z XY Motion)
 %
 % Drives the OpenManipulator-X to pick a tool and move it through a series
 % of gates at constant Z height, then places it at the drop zone.
 %
 % Usage (from MATLAB, in project root):
-%   run('scripts/task2c_tool_through_gates.m')
+%   run('scripts/task2c_tool_through_gates_legacy.m')
 %
 % Set DRY_RUN = true to validate IK/FK for all waypoints without hardware.
 %
@@ -142,7 +142,7 @@ num_waypoints = size(waypoints, 1);
 %% ======================== DRY-RUN IK/FK VALIDATION ========================
 
 fprintf('========================================================\n');
-fprintf('  Task 2.c — Tool Through Gates\n');
+fprintf('  Legacy Task 2.c — Tool Through Gates\n');
 fprintf('========================================================\n\n');
 
 fprintf('--- IK/FK Dry-Run Validation (%d waypoints) ---\n\n', num_waypoints);
@@ -226,7 +226,7 @@ hw.openGripper();
 pause(1);
 
 fprintf('\n========================================================\n');
-fprintf('  Executing Task 2.c Sequence (%d waypoints)\n', num_waypoints);
+fprintf('  Executing Legacy Task 2.c Sequence (%d waypoints)\n', num_waypoints);
 fprintf('========================================================\n\n');
 
 for i = 1:num_waypoints
@@ -300,7 +300,7 @@ end
 %% ======================== SHUTDOWN ========================
 
 fprintf('\n========================================================\n');
-fprintf('  Task 2.c Complete — Returning Home\n');
+fprintf('  Legacy Task 2.c Complete — Returning Home\n');
 fprintf('========================================================\n\n');
 
 hw.moveHome();

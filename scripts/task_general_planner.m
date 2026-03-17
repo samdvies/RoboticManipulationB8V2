@@ -89,10 +89,10 @@ for ci = 1:size(cfg.cubes, 1)
             'cube_xy', cube_xy, 'desc', sprintf('C%d: Bridge pick from (%.0f,%.0f)', ci, cube_xy)); %#ok<AGROW>
 
         pick_angle_bridge = inferPickupAngle(cube_xy);
-        plan{end+1} = struct('action', 'place_staging', 'cube', ci, ...
+        plan{end+1} = struct('action', 'bridge_stage_for_rotation', 'cube', ci, ...
             'target_xy', staging_xy, 'stack_level', 0, 'is_rotated', false, ...
             'pickup_angle_deg', pick_angle_bridge, 'release_z_adjust', 0, ...
-            'desc', sprintf('C%d: Place on staging holder H%d (%.0f,%.0f)', ci, staging_idx, staging_xy)); %#ok<AGROW>
+            'desc', sprintf('C%d: Stage on holder H%d then re-pick for rotation (%.0f,%.0f)', ci, staging_idx, staging_xy)); %#ok<AGROW>
 
         % Mark staging holder occupied, mark original cube holder free
         holder_occupied(staging_idx) = true;
@@ -294,8 +294,8 @@ for s = 1:length(plan)
         case 'rotate'
             rotateCubeInHand(hw, step.current_xy, cfg);
 
-        case 'place_staging'
-            placeCube(hw, step.target_xy, step.stack_level, step.is_rotated, step.pickup_angle_deg, cfg, step.release_z_adjust);
+        case 'bridge_stage_for_rotation'
+            placeBridgeRotationStaging(hw, step.target_xy, step.pickup_angle_deg, cfg);
 
         case 'place_target'
             placeCube(hw, step.target_xy, step.stack_level, step.is_rotated, step.pickup_angle_deg, cfg, step.release_z_adjust);
@@ -482,7 +482,22 @@ function waypoints = collectWaypoints(plan, cfg)
                 end
                 waypoints(end+1,:) = [cx, cy, place_approach_z, 0]; %#ok<AGROW>  % travel height to clear bridge
 
-            case {'place_staging', 'place_target'}
+            case 'bridge_stage_for_rotation'
+                tx = step.target_xy(1); ty = step.target_xy(2);
+                pz = cfg.CUBE_Z_SURFACE + cfg.CUBE_SIZE/2 + cfg.PICK_Z_OFFSET_MM;
+                po = getPlaceOffsetStdForAngle(cfg, step.pickup_angle_deg);
+                brg_t = atan2(ty, tx);
+                po_wx = po(1)*cos(brg_t) - po(2)*sin(brg_t);
+                po_wy = po(1)*sin(brg_t) + po(2)*cos(brg_t);
+                ax = tx + po_wx + cfg.place_offset_tuning(1);
+                ay = ty + po_wy + cfg.place_offset_tuning(2);
+                waypoints(end+1,:) = [ax, ay, place_approach_z, 0]; %#ok<AGROW>
+                waypoints(end+1,:) = [ax, ay, pz + cfg.PLACE_VERTICAL_OFFSET_MM, 0]; %#ok<AGROW>
+                waypoints(end+1,:) = [ax, ay, pz + cfg.PLACE_DROP_MM, 0]; %#ok<AGROW>
+                waypoints(end+1,:) = [ax, ay, place_approach_z, 0]; %#ok<AGROW>
+                waypoints(end+1,:) = [ax, ay, place_approach_z, cfg.TRANSIT_PITCH]; %#ok<AGROW>
+
+            case 'place_target'
                 tx = step.target_xy(1); ty = step.target_xy(2);
                 sl = step.stack_level;
                 pz = cfg.CUBE_Z_SURFACE + cfg.CUBE_SIZE/2 + cfg.PICK_Z_OFFSET_MM + sl * cfg.CUBE_SIZE;
