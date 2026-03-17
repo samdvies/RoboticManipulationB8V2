@@ -44,6 +44,9 @@ classdef HardwareInterface < handle
         lib_name    % SDK library name
         group_num   % Sync write group handler
         is_connected = false;
+        % COM debug: set true to log every Tx/Rx result and help diagnose port drops
+        COM_DEBUG = false;
+        COM_OP_COUNT = 0;   % Incremented on each check; helps correlate logs with time
     end
 
     methods
@@ -84,21 +87,115 @@ classdef HardwareInterface < handle
             obj.port_num = portHandler(com_port);
             packetHandler();
 
+            obj.logCom('[CONNECT] portHandler done, opening port...');
             if ~openPort(obj.port_num)
-                error('Failed to open port %s.', com_port);
+                error('Failed to open port %s. (Device in use? Wrong COM number? Unplugged?)', com_port);
             end
+            obj.logCom('[CONNECT] openPort OK');
 
             if ~setBaudRate(obj.port_num, baudrate)
-                error('Failed to set baud rate to %d.', baudrate);
+                closePort(obj.port_num);
+                error('Failed to set baud rate to %d on %s.', baudrate, com_port);
             end
+            obj.logCom('[CONNECT] setBaudRate OK');
 
             % Create Sync Write group for Goal Position (4 bytes)
             obj.group_num = groupSyncWrite(obj.port_num, ...
                 obj.PROTOCOL_VERSION, obj.ADDR_GOAL_POSITION, 4);
 
             obj.is_connected = true;
-            fprintf('Connected successfully.\n');
+            obj.com_tic = tic;
+            fprintf('Connected successfully (port %s @ %d baud).\n', com_port, baudrate);
         end
+
+        function logCom(obj, msg)
+        %LOGCOM If COM_DEBUG, print timestamped COM message; always increment op count
+            obj.COM_OP_COUNT = obj.COM_OP_COUNT + 1;
+            if obj.COM_DEBUG
+                t = 0;
+                if ~isempty(obj.com_tic), t = toc(obj.com_tic); end
+                fprintf('[COM #%d t=%.2f] %s\n', obj.COM_OP_COUNT, t, msg);
+            end
+        end
+
+        function ok = checkAndLogComResult(obj, caller_name, motor_id)
+        %CHECKANDLOGCOMRESULT Check getLastTxRxResult/getLastRxPacketError; log if COM_DEBUG or non-zero
+            if nargin < 3
+                motor_id = [];
+            end
+            comm = getLastTxRxResult(obj.port_num, obj.PROTOCOL_VERSION);
+            err = getLastRxPacketError(obj.port_num, obj.PROTOCOL_VERSION);
+            obj.COM_OP_COUNT = obj.COM_OP_COUNT + 1;
+            ok = (comm == 0 && err == 0);
+            id_str = '';
+            if ~isempty(motor_id)
+                id_str = sprintf(' id=%d', motor_id);
+            end
+            if ~ok || obj.COM_DEBUG
+                comm_str = obj.commResultString(comm);
+                err_str = obj.rxErrorString(err);
+                t = 0; if ~isempty(obj.com_tic), t = toc(obj.com_tic); end
+                fprintf('[COM #%d t=%.2f] %s%s TxRx=%d (%s) RxErr=0x%02X (%s)\n', ...
+                    obj.COM_OP_COUNT, t, caller_name, id_str, comm, comm_str, err, err_str);
+            end
+        end
+
+        function s = commResultString(~, code)
+            switch code
+                case 0,   s = 'SUCCESS';
+                case 1,   s = 'PORT_BUSY';
+                case 2,   s = 'TX_FAIL';
+                case 3,   s = 'RX_FAIL';
+                case 4,   s = 'TX_ERROR';
+                case 5,   s = 'RX_WAITING';
+                case 256, s = 'RX_TIMEOUT';
+                case 512, s = 'TX_TIMEOUT';
+                otherwise, s = sprintf('UNKNOWN_%d', code);
+            end
+        end
+
+        function s = rxErrorString(~, bits)
+            if bits == 0
+                s = 'none';
+                return;
+            end
+            parts = {};
+            if bitand(bits, 1),  parts{end+1} = 'INPUT_VOLTAGE'; end
+            if bitand(bits, 2),  parts{end+1} = 'ANGLE_LIMIT'; end
+            if bitand(bits, 4),  parts{end+1} = 'OVERHEAT'; end
+            if bitand(bits, 8),  parts{end+1} = 'RANGE'; end
+            if bitand(bits, 16), parts{end+1} = 'CHECKSUM'; end
+            if bitand(bits, 32), parts{end+1} = 'OVERLOAD'; end
+            if bitand(bits, 64), parts{end+1} = 'INSTRUCTION'; end
+            if isempty(parts), s = sprintf('0x%02X', bits); else, s = strjoin(parts, '|'); end
+        end
+
+        function startComTic(obj)
+        %STARTCOMTIC Start/restart the timer used for COM_DEBUG timestamps (call after connect)
+            obj.com_tic = tic;
+        end
+
+        function [ok, comm, rxerr] = checkComHealth(obj, verbose)
+        %CHECKCOMHEALTH Quick port sanity check: read one motor (ID 11). Returns ok, comm code, rx error.
+        %   [ok, comm, rxerr] = checkComHealth() or checkComHealth(true) for forced print
+            if nargin < 2, verbose = false; end
+            read4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, obj.DXL_IDS(1), obj.ADDR_PRESENT_POSITION);
+            comm = getLastTxRxResult(obj.port_num, obj.PROTOCOL_VERSION);
+            rxerr = getLastRxPacketError(obj.port_num, obj.PROTOCOL_VERSION);
+            ok = (comm == 0 && rxerr == 0);
+            if verbose || ~ok || obj.COM_DEBUG
+                fprintf('[COM HEALTH #%d t=%.2f] read ID11: ok=%d comm=%d (%s) rxerr=0x%02X (%s)\n', ...
+                    obj.COM_OP_COUNT + 1, toc(obj.com_tic), ok, comm, obj.commResultString(comm), rxerr, obj.rxErrorString(rxerr));
+            end
+            obj.COM_OP_COUNT = obj.COM_OP_COUNT + 1;
+        end
+    end
+
+    properties (Access = private)
+        com_tic = [];  % tic for COM_DEBUG elapsed time
+    end
+
+    methods
 
         function configure(obj, velocity)
         %CONFIGURE Set operating mode, velocity, and position limits
@@ -119,11 +216,13 @@ classdef HardwareInterface < handle
                 % Disable torque first (required to change EEPROM settings)
                 write1ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
                     obj.ADDR_TORQUE_ENABLE, 0);
+                obj.checkAndLogComResult('configure(torque_off)', id);
                 pause(0.05);
 
                 % Set Position Control Mode
                 write1ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
                     obj.ADDR_OPERATING_MODE, obj.POSITION_CONTROL_MODE);
+                obj.checkAndLogComResult('configure(mode)', id);
                 pause(0.05);
 
                 % Set position limits from JointLimits
@@ -133,17 +232,19 @@ classdef HardwareInterface < handle
                     obj.ADDR_MIN_POSITION_LIMIT, min_enc);
                 write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
                     obj.ADDR_MAX_POSITION_LIMIT, max_enc);
+                obj.checkAndLogComResult('configure(limits)', id);
 
                 % Set profile velocity & acceleration
                 write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
                     obj.ADDR_PROFILE_VELOCITY, velocity);
                 write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, ...
                     obj.ADDR_PROFILE_ACCELERATION, max(1, round(velocity/2))); % Accel = 50% of Vel
+                obj.checkAndLogComResult('configure(vel/accel)', id);
 
-                % Check errors
+                % Summary
                 dxl_comm = getLastTxRxResult(obj.port_num, obj.PROTOCOL_VERSION);
                 if dxl_comm ~= 0
-                    warning('Motor ID %d: comm error (code %d)', id, dxl_comm);
+                    warning('Motor ID %d: comm error (code %d) %s', id, dxl_comm, obj.commResultString(dxl_comm));
                 else
                     fprintf('  Motor %d (%s): OK [%d°, %d°] vel=%d\n', ...
                         id, joint_names{i}, limits(i,1), limits(i,2), velocity);
@@ -195,8 +296,11 @@ classdef HardwareInterface < handle
                 groupSyncWriteAddParam(obj.group_num, id, enc, 4);
             end
 
-            % Transmit
+            % Transmit (Sync Write does not return status packet; TxRx result may be stale)
             groupSyncWriteTxPacket(obj.group_num);
+            if obj.COM_DEBUG
+                obj.logCom(sprintf('syncWritePositions enc=[%u %u %u %u]', encoder_targets(1), encoder_targets(2), encoder_targets(3), encoder_targets(4)));
+            end
         end
 
         function moveToAngles(obj, q)
@@ -294,6 +398,128 @@ classdef HardwareInterface < handle
                 q_via2 = OpenManipulator.IK(x, y, safe_z, pitch);
                 obj.executePoseMove(q_via2, [x, y, safe_z], pitch, time_sec, mode, z_floor_mm, ctx_or_fly);
                 obj.executePoseMove(q_target, [x, y, z], pitch, time_sec, mode, z_floor_mm, false);
+            end
+        end
+
+        function movePosePath(obj, waypoints, opts)
+        %MOVEPOSEPATH Execute an Nx4 [x y z pitch] path as one continuous stream.
+        %   movePosePath(waypoints)
+        %   movePosePath(waypoints, opts)
+        %   opts fields:
+        %     .speed_mm_s      linear speed target (default 90)
+        %     .rot_speed_deg_s pitch speed target (default 90)
+        %     .dt              command period seconds (default 0.02)
+        %     .z_floor_mm      EE floor safety limit (default 20)
+        %     .motion_mode     currently supports continuous mode 2 (default 2)
+        %     .smoothing       'smoothstep' or 'linear' (default 'smoothstep')
+        %     .final_settle    wait for motion once at end (default true)
+        %     .verify_final    verify final pose once at end (default true)
+            if nargin < 3 || isempty(opts)
+                opts = struct();
+            end
+            if isempty(waypoints)
+                return;
+            end
+            if size(waypoints, 2) ~= 4
+                error('movePosePath expects Nx4 waypoints [x y z pitch].');
+            end
+
+            speed_mm_s = 90.0;
+            if isfield(opts, 'speed_mm_s') && ~isempty(opts.speed_mm_s)
+                speed_mm_s = double(opts.speed_mm_s);
+            end
+            rot_speed_deg_s = 90.0;
+            if isfield(opts, 'rot_speed_deg_s') && ~isempty(opts.rot_speed_deg_s)
+                rot_speed_deg_s = double(opts.rot_speed_deg_s);
+            end
+            dt = 0.02;
+            if isfield(opts, 'dt') && ~isempty(opts.dt)
+                dt = double(opts.dt);
+            end
+            z_floor_mm = 20.0;
+            if isfield(opts, 'z_floor_mm') && ~isempty(opts.z_floor_mm)
+                z_floor_mm = double(opts.z_floor_mm);
+            end
+            motion_mode = 2;
+            if isfield(opts, 'motion_mode') && ~isempty(opts.motion_mode)
+                motion_mode = double(opts.motion_mode);
+            end
+            smoothing = 'smoothstep';
+            if isfield(opts, 'smoothing') && ~isempty(opts.smoothing)
+                smoothing = char(opts.smoothing);
+            end
+            final_settle = true;
+            if isfield(opts, 'final_settle') && ~isempty(opts.final_settle)
+                final_settle = logical(opts.final_settle);
+            end
+            verify_final = true;
+            if isfield(opts, 'verify_final') && ~isempty(opts.verify_final)
+                verify_final = logical(opts.verify_final);
+            end
+
+            if motion_mode ~= 2
+                for i = 1:size(waypoints, 1)
+                    wp = waypoints(i, :);
+                    obj.moveToPose(wp(1), wp(2), wp(3), wp(4), 0.5, motion_mode, z_floor_mm);
+                end
+                return;
+            end
+
+            q_current = obj.readAngles();
+            [T_current, ~] = OpenManipulator.FK(q_current);
+            prev_pose = [T_current(1:3, 4)', -(q_current(2) + q_current(3) + q_current(4))];
+            q_final = q_current;
+
+            for i = 1:size(waypoints, 1)
+                target_pose = double(waypoints(i, :));
+                dist_lin = norm(target_pose(1:3) - prev_pose(1:3));
+                dist_rot = abs(target_pose(4) - prev_pose(4));
+                duration = max([dist_lin / max(speed_mm_s, 1e-6), ...
+                                dist_rot / max(rot_speed_deg_s, 1e-6), ...
+                                dt]);
+                num_steps = max(1, ceil(duration / dt));
+
+                for step = 1:num_steps
+                    s = step / num_steps;
+                    if strcmpi(smoothing, 'linear')
+                        s_interp = s;
+                    else
+                        s_interp = s * s * (3.0 - 2.0 * s);
+                    end
+                    pose = (1 - s_interp) * prev_pose + s_interp * target_pose;
+
+                    if pose(3) < z_floor_mm
+                        error('Motion Safety Violation: Commanded Z (%.1f mm) < %.1f mm. Aborting.', pose(3), z_floor_mm);
+                    end
+
+                    q_interp = OpenManipulator.IK(pose(1), pose(2), pose(3), pose(4));
+                    [q_interp, ~] = OpenManipulator.JointLimits.Clamp(q_interp);
+                    encoders = zeros(1, 4);
+                    for joint_idx = 1:4
+                        encoders(joint_idx) = obj.deg2enc(q_interp(joint_idx));
+                    end
+                    obj.syncWritePositions(encoders);
+                    pause(dt);
+                    q_final = q_interp;
+                end
+
+                prev_pose = target_pose;
+            end
+
+            if final_settle
+                encoders = zeros(1, 4);
+                for joint_idx = 1:4
+                    encoders(joint_idx) = obj.deg2enc(q_final(joint_idx));
+                end
+                for tail = 1:5
+                    obj.syncWritePositions(encoders);
+                    pause(dt);
+                end
+                obj.waitForMotion();
+            end
+
+            if verify_final
+                obj.verifyPose(q_final);
             end
         end
 
@@ -855,9 +1081,13 @@ classdef HardwareInterface < handle
         %   q = readAngles() returns [q1, q2, q3, q4] in degrees
             q = zeros(1, 4);
             for i = 1:4
-                enc = read4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, ...
-                    obj.DXL_IDS(i), obj.ADDR_PRESENT_POSITION);
+                id = obj.DXL_IDS(i);
+                enc = read4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, obj.ADDR_PRESENT_POSITION);
                 q(i) = obj.enc2deg(enc);
+                ok = obj.checkAndLogComResult('readAngles', id);
+                if ~ok && ~obj.COM_DEBUG
+                    fprintf('[COM] readAngles FAILED at motor ID=%d (comm/rx error above). Robot may have lost connection.\n', id);
+                end
             end
         end
 
@@ -870,14 +1100,21 @@ classdef HardwareInterface < handle
             end
 
             start_time = tic;
+            last_log = 0;
             while toc(start_time) < timeout
+                elapsed = toc(start_time);
                 all_stopped = true;
+                moving_ids = [];
                 for id = obj.DXL_IDS
                     moving = read1ByteTxRx(obj.port_num, ...
                         obj.PROTOCOL_VERSION, id, obj.ADDR_MOVING);
+                    ok = obj.checkAndLogComResult('waitForMotion', id);
+                    if ~ok && ~obj.COM_DEBUG
+                        fprintf('[COM] waitForMotion read FAILED for ID=%d (possible port drop).\n', id);
+                    end
                     if moving == 1
                         all_stopped = false;
-                        break;
+                        moving_ids(end+1) = id;
                     end
                 end
 
@@ -888,6 +1125,7 @@ classdef HardwareInterface < handle
                     for id = obj.DXL_IDS
                         moving = read1ByteTxRx(obj.port_num, ...
                             obj.PROTOCOL_VERSION, id, obj.ADDR_MOVING);
+                        obj.checkAndLogComResult('waitForMotion(confirm)', id);
                         if moving == 1
                             still_stopped = false;
                             break;
@@ -897,9 +1135,23 @@ classdef HardwareInterface < handle
                         return;
                     end
                 end
+
+                % Log every 2.5s when waiting so user sees why robot "stops" (or port dropped)
+                if ~all_stopped && (elapsed - last_log >= 2.5)
+                    fprintf('[COM] waitForMotion t=%.1fs still moving: IDs [%s]\n', elapsed, num2str(moving_ids));
+                    last_log = elapsed;
+                end
                 pause(0.02);
             end
-            warning('Motion timeout after %.1f seconds.', timeout);
+            % Final: report which motors are still moving and do one health check
+            moving_ids = [];
+            for id = obj.DXL_IDS
+                moving = read4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, id, obj.ADDR_MOVING);
+                obj.checkAndLogComResult('waitForMotion(timeout)', id);
+                if moving == 1, moving_ids(end+1) = id; end
+            end
+            warning('Motion timeout after %.1f s. Motors still moving: [%s]. Check COM cable and port.', timeout, num2str(moving_ids));
+            obj.checkComHealth(true);
         end
 
         function configureGripper(obj, velocity)
@@ -964,6 +1216,10 @@ classdef HardwareInterface < handle
                 (pct / 100) * (obj.GRIPPER_CLOSE_ENC - obj.GRIPPER_OPEN_ENC));
             write4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, ...
                 obj.GRIPPER_ID, obj.ADDR_GOAL_POSITION, enc);
+            ok = obj.checkAndLogComResult('setGripperPosition', obj.GRIPPER_ID);
+            if ~ok && ~obj.COM_DEBUG
+                fprintf('[COM] setGripperPosition FAILED (gripper ID=%d). Check cable/port.\n', obj.GRIPPER_ID);
+            end
             fprintf('Gripper -> %d%% (encoder %d)\n', pct, enc);
         end
 
@@ -972,6 +1228,7 @@ classdef HardwareInterface < handle
         %   pct = readGripperPosition() — 0 = open, 100 = closed
             enc = read4ByteTxRx(obj.port_num, obj.PROTOCOL_VERSION, ...
                 obj.GRIPPER_ID, obj.ADDR_PRESENT_POSITION);
+            obj.checkAndLogComResult('readGripperPosition', obj.GRIPPER_ID);
             range = obj.GRIPPER_CLOSE_ENC - obj.GRIPPER_OPEN_ENC;
             pct = (double(enc) - obj.GRIPPER_OPEN_ENC) / range * 100;
             pct = max(0, min(100, pct));
