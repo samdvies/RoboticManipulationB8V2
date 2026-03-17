@@ -53,80 +53,150 @@ end
 %% ======================== PLAN SEQUENCE ========================
 
 plan = {};
-pending = 1:n_cubes;
 holder_occupied_plan = holder_occupied;
 assigned_holder_idx = zeros(n_cubes, 1);
 
-while ~isempty(pending)
-    [cube_idx, move_reason] = chooseNextCube(pending, cube_positions, cube_is_hard);
-    cube_xy = cube_positions(cube_idx, :);
-    pick_angle = inferPickupAngle(cube_xy);
-    release_z_adjust = resolveReleaseZAdjust(cfg, cube_idx);
-    is_hard = cube_is_hard(cube_idx);
-    remaining_pending = pending(pending ~= cube_idx);
-    remaining_hard_targets = cube_positions(remaining_pending(cube_is_hard(remaining_pending)), :);
+use_forced = isfield(cfg, 'cube_forced_order') && isfield(cfg, 'cube_forced_targets');
 
-    if is_hard
-        place_idx = findFurthestEligibleEmptyHolder( ...
-            cfg.holders, holder_occupied_plan, remaining_hard_targets);
-    elseif strcmp(move_reason, 'blocking_soft')
-        place_idx = findNearestEligibleEmptyHolder( ...
-            cfg.holders, holder_occupied_plan, cube_xy, remaining_hard_targets);
-    else
-        place_idx = findFirstEmptyHolder(holder_occupied_plan);
+if use_forced
+    %% --- Forced order / explicit targets ---
+    forced_order = cfg.cube_forced_order;
+    forced_targets = cfg.cube_forced_targets;
+
+    for fi = 1:numel(forced_order)
+        cube_idx = forced_order(fi);
+        cube_xy = cube_positions(cube_idx, :);
+        pick_angle = inferPickupAngle(cube_xy);
+        release_z_adjust = resolveReleaseZAdjust(cfg, cube_idx);
+        is_hard = cube_is_hard(cube_idx);
+
+        place_xy = forced_targets(cube_idx, :);
+
+        % Find the holder index that matches the forced target coordinate
+        place_idx = findSourceHolder(cfg.holders, place_xy);
+        if isempty(place_idx)
+            error('Forced target (%.1f, %.1f) for cube %d is not a known holder.', ...
+                place_xy(1), place_xy(2), cube_idx);
+        end
+        assigned_holder_idx(cube_idx) = place_idx;
+
+        if is_hard
+            pick_desc = sprintf('C%d: Hard pick from (%.0f, %.0f) pitch=0', ...
+                cube_idx, cube_xy(1), cube_xy(2));
+        else
+            pick_desc = sprintf('C%d: Pick from (%.0f, %.0f) %.1f deg', ...
+                cube_idx, cube_xy(1), cube_xy(2), pick_angle);
+        end
+
+        place_desc = sprintf('C%d: Place at (%.0f, %.0f) [holder H%d]', ...
+            cube_idx, place_xy(1), place_xy(2), place_idx);
+
+        move_reason = 'forced';
+
+        plan{end+1} = struct( ... %#ok<AGROW>
+            'action', 'pick', ...
+            'cube', cube_idx, ...
+            'cube_xy', cube_xy, ...
+            'pickup_angle_deg', pick_angle, ...
+            'is_hard', is_hard, ...
+            'move_reason', move_reason, ...
+            'desc', pick_desc);
+
+        plan{end+1} = struct( ... %#ok<AGROW>
+            'action', 'place_target', ...
+            'cube', cube_idx, ...
+            'target_xy', place_xy, ...
+            'stack_level', 0, ...
+            'is_rotated', is_hard, ...
+            'is_hard', is_hard, ...
+            'pickup_angle_deg', pick_angle, ...
+            'release_z_adjust', release_z_adjust, ...
+            'holder_idx', place_idx, ...
+            'desc', place_desc);
+
+        source_holder_idx = findSourceHolder(cfg.holders, cube_xy);
+        if isempty(source_holder_idx)
+            error('Cube %d at (%.1f, %.1f) is not on a known holder.', ...
+                cube_idx, cube_xy(1), cube_xy(2));
+        end
+        holder_occupied_plan(source_holder_idx) = false;
+        holder_occupied_plan(place_idx) = true;
     end
+else
+    %% --- Autonomous planning (original logic) ---
+    pending = 1:n_cubes;
 
-    if isempty(place_idx)
-        error('No empty holder available while planning cube %d.', cube_idx);
+    while ~isempty(pending)
+        [cube_idx, move_reason] = chooseNextCube(pending, cube_positions, cube_is_hard);
+        cube_xy = cube_positions(cube_idx, :);
+        pick_angle = inferPickupAngle(cube_xy);
+        release_z_adjust = resolveReleaseZAdjust(cfg, cube_idx);
+        is_hard = cube_is_hard(cube_idx);
+        remaining_pending = pending(pending ~= cube_idx);
+        remaining_hard_targets = cube_positions(remaining_pending(cube_is_hard(remaining_pending)), :);
+
+        if is_hard
+            place_idx = findFurthestEligibleEmptyHolder( ...
+                cfg.holders, holder_occupied_plan, remaining_hard_targets);
+        elseif strcmp(move_reason, 'blocking_soft')
+            place_idx = findNearestEligibleEmptyHolder( ...
+                cfg.holders, holder_occupied_plan, cube_xy, remaining_hard_targets);
+        else
+            place_idx = findFirstEmptyHolder(holder_occupied_plan);
+        end
+
+        if isempty(place_idx)
+            error('No empty holder available while planning cube %d.', cube_idx);
+        end
+
+        place_xy = cfg.holders(place_idx, :);
+        assigned_holder_idx(cube_idx) = place_idx;
+
+        if is_hard
+            pick_desc = sprintf('C%d: Hard pick from (%.0f, %.0f) pitch=0', ...
+                cube_idx, cube_xy(1), cube_xy(2));
+        elseif strcmp(move_reason, 'blocking_soft')
+            pick_desc = sprintf('C%d: Move blocking cube from (%.0f, %.0f)', ...
+                cube_idx, cube_xy(1), cube_xy(2));
+        else
+            pick_desc = sprintf('C%d: Pick from (%.0f, %.0f) %.1f deg', ...
+                cube_idx, cube_xy(1), cube_xy(2), pick_angle);
+        end
+
+        place_desc = sprintf('C%d: Place at (%.0f, %.0f) [holder H%d]', ...
+            cube_idx, place_xy(1), place_xy(2), place_idx);
+
+        plan{end+1} = struct( ... %#ok<AGROW>
+            'action', 'pick', ...
+            'cube', cube_idx, ...
+            'cube_xy', cube_xy, ...
+            'pickup_angle_deg', pick_angle, ...
+            'is_hard', is_hard, ...
+            'move_reason', move_reason, ...
+            'desc', pick_desc);
+
+        plan{end+1} = struct( ... %#ok<AGROW>
+            'action', 'place_target', ...
+            'cube', cube_idx, ...
+            'target_xy', place_xy, ...
+            'stack_level', 0, ...
+            'is_rotated', is_hard, ...
+            'is_hard', is_hard, ...
+            'pickup_angle_deg', pick_angle, ...
+            'release_z_adjust', release_z_adjust, ...
+            'holder_idx', place_idx, ...
+            'desc', place_desc);
+
+        source_holder_idx = findSourceHolder(cfg.holders, cube_xy);
+        if isempty(source_holder_idx)
+            error('Cube %d at (%.1f, %.1f) is not on a known holder.', ...
+                cube_idx, cube_xy(1), cube_xy(2));
+        end
+        holder_occupied_plan(source_holder_idx) = false;
+        holder_occupied_plan(place_idx) = true;
+
+        pending(pending == cube_idx) = [];
     end
-
-    place_xy = cfg.holders(place_idx, :);
-    assigned_holder_idx(cube_idx) = place_idx;
-
-    if is_hard
-        pick_desc = sprintf('C%d: Hard pick from (%.0f, %.0f) pitch=0', ...
-            cube_idx, cube_xy(1), cube_xy(2));
-    elseif strcmp(move_reason, 'blocking_soft')
-        pick_desc = sprintf('C%d: Move blocking cube from (%.0f, %.0f)', ...
-            cube_idx, cube_xy(1), cube_xy(2));
-    else
-        pick_desc = sprintf('C%d: Pick from (%.0f, %.0f) %.1f deg', ...
-            cube_idx, cube_xy(1), cube_xy(2), pick_angle);
-    end
-
-    place_desc = sprintf('C%d: Place at (%.0f, %.0f) [holder H%d]', ...
-        cube_idx, place_xy(1), place_xy(2), place_idx);
-
-    plan{end+1} = struct( ... %#ok<AGROW>
-        'action', 'pick', ...
-        'cube', cube_idx, ...
-        'cube_xy', cube_xy, ...
-        'pickup_angle_deg', pick_angle, ...
-        'is_hard', is_hard, ...
-        'move_reason', move_reason, ...
-        'desc', pick_desc);
-
-    plan{end+1} = struct( ... %#ok<AGROW>
-        'action', 'place_target', ...
-        'cube', cube_idx, ...
-        'target_xy', place_xy, ...
-        'stack_level', 0, ...
-        'is_rotated', is_hard, ...
-        'is_hard', is_hard, ...
-        'pickup_angle_deg', pick_angle, ...
-        'release_z_adjust', release_z_adjust, ...
-        'holder_idx', place_idx, ...
-        'desc', place_desc);
-
-    source_holder_idx = findSourceHolder(cfg.holders, cube_xy);
-    if isempty(source_holder_idx)
-        error('Cube %d at (%.1f, %.1f) is not on a known holder.', ...
-            cube_idx, cube_xy(1), cube_xy(2));
-    end
-    holder_occupied_plan(source_holder_idx) = false;
-    holder_occupied_plan(place_idx) = true;
-
-    pending(pending == cube_idx) = [];
 end
 
 %% ======================== DISPLAY WORKSPACE ========================

@@ -64,12 +64,12 @@ cfg.PLACE_DROP_MM = 1;               % release slightly above the surface
 % HOLDERS
 % =========================================================================
 cfg.holders = [
-    150,  150;
-    100,    0;
-      0,  150;
-     75, -200;
-    175, -175;
-    225,    0;
+    100,  100;   % H1 - Cube 1 start
+    100, -200;   % H2 - Cube 2 start
+      0, -100;   % H3 - Cube 3 start
+      0,  200;   % H4 - Cube 1 dest
+    175,  175;   % H5 - Cube 2 dest
+    175,    0;   % H6 - Cube 3 dest
 ];
 
 % =========================================================================
@@ -77,9 +77,17 @@ cfg.holders = [
 % =========================================================================
 % [x, y, is_hard]
 cfg.cubes = [
-     75, -200, 0;   % Cube 1
-    175, -175, 1;   % Cube 2 - example hard cube at large radius
-    225,    0, 0;   % Cube 3
+    100,  100, 0;   % Cube 1 - standard
+    100, -200, 1;   % Cube 2 - hard
+      0, -100, 0;   % Cube 3 - standard
+];
+
+% Forced execution order and explicit placement targets.
+cfg.cube_forced_order = [1, 2, 3];
+cfg.cube_forced_targets = [
+      0,  200;   % Cube 1 -> (0, 200)
+    175,  175;   % Cube 2 -> (175, 175)
+    175,    0;   % Cube 3 -> (175, 0)
 ];
 
 % Kept for reference only. Holder assignment is now planner-driven.
